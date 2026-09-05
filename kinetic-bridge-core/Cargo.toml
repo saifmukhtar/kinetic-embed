@@ -1,0 +1,20 @@
+[package]
+name = "kinetic-bridge-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.37", features = ["full"] }
+
+kinetic-core = { path = "/home/saif/kinetic/kinetic-core" }
+kinetic-network = { path = "/home/saif/kinetic/kinetic-network" }
+kinetic-storage = { path = "/home/saif/kinetic/kinetic-storage" }
+kinetic-types = { path = "/home/saif/kinetic/kinetic-types" }
+kinetic-local = { path = "/home/saif/kinetic/kinetic-local" }
+kinetic-verify = { path = "/home/saif/kinetic/kinetic-verify" }
+kinetic-action = { path = "/home/saif/kinetic/kinetic-action" }
+kinetic-primitives = { path = "/home/saif/kinetic/kinetic-primitives" }
+kinetic-kid = { path = "/home/saif/kinetic/kinetic-kid" }
+hex = "0.4.3"
