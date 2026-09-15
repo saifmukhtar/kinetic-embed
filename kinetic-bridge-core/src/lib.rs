@@ -4,6 +4,7 @@
 
 pub mod commands;
 pub mod state;
+pub mod callback;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

@@ -3,18 +3,36 @@ use crate::state::{get_network, RUNTIME};
 use serde_json::Value;
 
 /// Subscribes to a Gossipsub topic and streams live events via Server-Sent Events (SSE).
-/// Currently stubbed: Requires global C-Callback pointer for streaming over FFI.
+/// Subscribes to a Gossipsub topic and streams live events via the global C-Callback.
 pub fn handle_gossip_subscribe(params: Option<Value>) -> JsonResponse {
-    let _topic = match params.as_ref().and_then(|p| p.get("topic")).and_then(|t| t.as_str()) {
+    let topic = match params.as_ref().and_then(|p| p.get("topic")).and_then(|t| t.as_str()) {
         Some(t) => t.to_string(),
         None => return JsonResponse { status: "error".to_string(), data: None, error: Some("Missing 'topic'".to_string()) },
     };
 
-    // TODO: Implement Native C-Callback bridging here
+    let task_topic = topic.clone();
+    RUNTIME.get().unwrap().spawn(async move {
+        let mut rx = crate::state::get_gossip_tx().subscribe();
+        tracing::info!("Background task subscribed to gossip topic: {}", task_topic);
+        
+        while let Ok((msg_topic, payload, _, _)) = rx.recv().await {
+            if msg_topic == task_topic {
+                // We attempt to decode it as a string first, fallback to hex.
+                let data = match String::from_utf8(payload) {
+                    Ok(s) => serde_json::Value::String(s),
+                    Err(e) => serde_json::Value::String(hex::encode(e.into_bytes())),
+                };
+                crate::callback::emit_event(&task_topic, data);
+            }
+        }
+    });
+
     JsonResponse {
-        status: "error".to_string(),
-        data: None,
-        error: Some("Streaming subscriptions over FFI require the C-Callback pointer. Not yet implemented.".to_string()),
+        status: "success".to_string(),
+        data: Some(serde_json::json!({
+            "message": format!("Successfully subscribed to gossip topic: {}", topic)
+        })),
+        error: None,
     }
 }
 
