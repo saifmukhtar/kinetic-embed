@@ -1,9 +1,11 @@
 //! HTTP REST API handlers for querying the Action transparency layer.
 
-use axum::Json;
-use kinetic_core::types::KynNetworkExt;
+use crate::JsonResponse;
+use crate::state::{get_network, get_storage, RUNTIME};
+use kinetic_core::types::clock::KynNetworkExt;
 use kinetic_local::action::GLOBAL_ACTION_STATE;
 use serde::Serialize;
+use serde_json::Value;
 use std::collections::HashMap;
 
 /// A period of time when the network was halted.
@@ -50,34 +52,24 @@ pub struct ActionStatusResponse {
 }
 
 /// Handles requests to retrieve the human-readable active action state.
-pub async fn handle_get_action_status(
-    axum::extract::State(state): axum::extract::State<crate::api::ApiState>,
-) -> Result<Json<ActionStatusResponse>, crate::api::error::AppError> {
-    let action_state = GLOBAL_ACTION_STATE.lock().map_err(|e| {
-        let sys_err = kinetic_core::error::SystemError::MutexPoisoned(e.to_string());
-        crate::api::error::AppError(kinetic_rpc::ApiError {
-            error_type: format!(
-                "{}/errors/{}",
-                kinetic_core::constants::DOCS_URL,
-                sys_err.code()
-            ),
-            title: "Internal Server Error".to_string(),
-            status: 500,
-            detail: sys_err.user_message(),
-            instance: None,
-            code: sys_err.code().to_string(),
-            retryable: sys_err.is_retryable(),
-            details: serde_json::Value::Null,
-            request_id: "".to_string(),
-        })
-    })?;
+pub fn handle_get_action_status(_params: Option<Value>) -> JsonResponse {
+    let action_state = match GLOBAL_ACTION_STATE.lock() {
+        Ok(s) => s,
+        Err(e) => {
+            return JsonResponse {
+                status: "error".to_string(),
+                data: None,
+                error: Some(format!("MutexPoisoned: {}", e)),
+            };
+        }
+    };
 
     let active_key_hex = action_state.active_sovereign_key.as_ref().map(hex::encode);
 
     // Fetch verified Kyn from the node's constantly updating local cache
     let current_kyn = {
         let kyn_provider =
-            kinetic_network::client::drand::DrandProvider::new(Some(state.storage.clone()));
+            kinetic_network::client::drand::DrandProvider::new(Some(get_storage()));
         use kinetic_core::traits::KynProvider;
         match kyn_provider.load_cached() {
             Ok(kyn) => kyn.kyn,
@@ -103,17 +95,21 @@ pub async fn handle_get_action_status(
         total_executed_actions: action_state.executed_hashes.len(),
     };
 
-    Ok(Json(ActionStatusResponse {
-        genesis_kyn: action_state.genesis_kyn.0,
-        current_kyn,
-        active_kyn_age,
-        active_sovereign_key_hex: active_key_hex,
-        is_halted: action_state.is_halted,
-        halt_start_kyn: action_state.halt_start_kyn.map(|k| k.0),
-        total_paused_kyns: action_state.total_paused_kyns,
-        last_pause,
-        metrics,
-    }))
+    JsonResponse {
+        status: "success".to_string(),
+        data: Some(serde_json::to_value(ActionStatusResponse {
+            genesis_kyn: action_state.genesis_kyn.0,
+            current_kyn,
+            active_kyn_age,
+            active_sovereign_key_hex: active_key_hex,
+            is_halted: action_state.is_halted,
+            halt_start_kyn: action_state.halt_start_kyn.map(|k| k.0),
+            total_paused_kyns: action_state.total_paused_kyns,
+            last_pause,
+            metrics,
+        }).unwrap()),
+        error: None,
+    }
 }
 
 /// Aggregated response containing both prime and infrastructure name mappings.
@@ -126,26 +122,17 @@ pub struct ActionNamesResponse {
 }
 
 /// Handles requests to retrieve all mapped Action names (primes and infras) in a single call.
-pub async fn handle_get_action_names()
--> Result<Json<ActionNamesResponse>, crate::api::error::AppError> {
-    let action_state = GLOBAL_ACTION_STATE.lock().map_err(|e| {
-        let sys_err = kinetic_core::error::SystemError::MutexPoisoned(e.to_string());
-        crate::api::error::AppError(kinetic_rpc::ApiError {
-            error_type: format!(
-                "{}/errors/{}",
-                kinetic_core::constants::DOCS_URL,
-                sys_err.code()
-            ),
-            title: "Internal Server Error".to_string(),
-            status: 500,
-            detail: sys_err.user_message(),
-            instance: None,
-            code: sys_err.code().to_string(),
-            retryable: sys_err.is_retryable(),
-            details: serde_json::Value::Null,
-            request_id: "".to_string(),
-        })
-    })?;
+pub fn handle_get_action_names(_params: Option<Value>) -> JsonResponse {
+    let action_state = match GLOBAL_ACTION_STATE.lock() {
+        Ok(s) => s,
+        Err(e) => {
+            return JsonResponse {
+                status: "error".to_string(),
+                data: None,
+                error: Some(format!("MutexPoisoned: {}", e)),
+            };
+        }
+    };
 
     let primes = action_state
         .mapped_prime_names
@@ -159,136 +146,104 @@ pub async fn handle_get_action_names()
         .map(|(name, pubkey_bytes)| (name.clone(), hex::encode(pubkey_bytes)))
         .collect::<HashMap<String, String>>();
 
-    Ok(Json(ActionNamesResponse { primes, infras }))
+    JsonResponse {
+        status: "success".to_string(),
+        data: Some(serde_json::to_value(ActionNamesResponse { primes, infras }).unwrap()),
+        error: None,
+    }
 }
 
-use crate::api::ApiState;
-use crate::api::PublishResponse;
-use axum::extract::State;
 use kinetic_core::traits::KynProvider;
 
+#[derive(Serialize)]
+pub struct PublishResponse {
+    pub status: String,
+    pub message: String,
+}
+
 /// Handles API requests to publish a `SignedActionMessage` to the DHT/Gossip network.
-///
-/// # Errors
-///
-/// Returns an error if the action message is invalid, quorum checks fail prematurely,
-/// or publishing to the Gossipsub network fails.
-pub async fn handle_publish_action(
-    axum::extract::Extension(role): axum::extract::Extension<crate::api::Role>,
-    State(state): State<ApiState>,
-    Json(msg): Json<kinetic_core::action::SignedActionMessage>,
-) -> Result<Json<PublishResponse>, crate::api::error::AppError> {
-    if !role.can_action() {
-        return Err(kinetic_core::error::RestApiError::InsufficientPrivileges.into());
-    }
+pub fn handle_publish_action(params: Option<Value>) -> JsonResponse {
+    let msg: kinetic_core::action::SignedActionMessage = match params {
+        Some(p) => match serde_json::from_value(p) {
+            Ok(m) => m,
+            Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Invalid params: {}", e)) }
+        },
+        None => return JsonResponse { status: "error".to_string(), data: None, error: Some("Missing params".to_string()) }
+    };
+
     tracing::info!("Received API publish request for Action action");
 
-    let _current_kyn = {
-        let kyn_provider =
-            kinetic_network::client::drand::DrandProvider::new(Some(state.storage.clone()));
-        use kinetic_core::types::clock::KynNetworkExt;
-        match kyn_provider.load_cached() {
-            Ok(kyn) => kyn.kyn,
-            Err(_) => match kyn_provider.fetch_latest().await {
+    RUNTIME.get().unwrap().block_on(async {
+        let _current_kyn = {
+            let kyn_provider =
+                kinetic_network::client::drand::DrandProvider::new(Some(get_storage()));
+            use kinetic_core::types::clock::KynNetworkExt;
+            match kyn_provider.load_cached() {
                 Ok(kyn) => kyn.kyn,
-                Err(_) => kinetic_core::types::Kyn::now_local().0,
-            },
-        }
-    };
+                Err(_) => match kyn_provider.fetch_latest().await {
+                    Ok(kyn) => kyn.kyn,
+                    Err(_) => kinetic_core::types::Kyn::now_local().0,
+                },
+            }
+        };
 
-    let is_valid = {
-        let mut action_state = kinetic_local::action::GLOBAL_ACTION_STATE.lock().unwrap();
-        let res = kinetic_core::action::process_action_message(
-            &mut action_state,
-            &msg,
-            kinetic_types::clock::Kyn(0), // Doesn't matter because it relies on signed_timestamp anyway
-        );
-        match res {
-            Ok(_) => {
-                let path = std::env::var(kinetic_core::constants::ENV_ACTION)
-                    .map(std::path::PathBuf::from)
-                    .unwrap_or_else(|_| {
-                        let config = kinetic_local::config::load_config();
-                        kinetic_local::config::get_base_dir()
-                            .join(config.daemon.storage_dir)
-                            .join("action.db")
-                    });
-                if let Err(e) = kinetic_local::action::save_action_to_disk(&action_state, &path) {
-                    let err = kinetic_core::error::ActionError::StateSaveFailed;
-                    tracing::error!(
-                        error_code = err.code(),
-                        "Failed to save modified action state to disk: {}",
-                        e
-                    );
+        let is_valid = {
+            let mut action_state = kinetic_local::action::GLOBAL_ACTION_STATE.lock().unwrap();
+            let res = kinetic_core::action::process_action_message(
+                &mut action_state,
+                &msg,
+                kinetic_types::clock::Kyn(0),
+            );
+            match res {
+                Ok(_) => {
+                    let path = std::env::var(kinetic_core::constants::ENV_ACTION)
+                        .map(std::path::PathBuf::from)
+                        .unwrap_or_else(|_| {
+                            let config = kinetic_local::config::load_config();
+                            kinetic_local::config::get_base_dir()
+                                .join(config.daemon.storage_dir)
+                                .join("action.db")
+                        });
+                    if let Err(e) = kinetic_local::action::save_action_to_disk(&action_state, &path) {
+                        tracing::error!("Failed to save modified action state to disk: {}", e);
+                    }
+                    true
                 }
+                Err(e) => {
+                    tracing::warn!("Rejecting action message via API: {}", e);
+                    return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Invalid action message: {}", e)) };
+                }
+            }
+        };
 
-                true
+        if !is_valid {
+            return JsonResponse { status: "error".to_string(), data: None, error: Some("Action message validation failed".to_string()) };
+        }
+
+        let payload_bytes = match serde_json::to_vec(&msg) {
+            Ok(b) => b,
+            Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Serialization failed: {}", e)) }
+        };
+
+        let mut envelope = vec![kinetic_types::network::NetworkOpcode::Action as u8];
+        envelope.extend(payload_bytes);
+
+        match get_network().broadcast_gossip(kinetic_core::constants::GOSSIP_TOPIC_GLOBAL, envelope).await {
+            Ok(_) => {
+                tracing::info!("Successfully published Action Message to the Gossip network");
+                JsonResponse {
+                    status: "success".to_string(),
+                    data: Some(serde_json::to_value(PublishResponse {
+                        status: "success".to_string(),
+                        message: "Action action accepted and routed to P2P network".to_string(),
+                    }).unwrap()),
+                    error: None,
+                }
             }
             Err(e) => {
-                tracing::warn!(
-                    error_code = e.code(),
-                    "Rejecting action message via API: {}",
-                    e
-                );
-                return Err(kinetic_core::error::RestApiError::BadRequest(format!(
-                    "Invalid action message: {}",
-                    e
-                ))
-                .into());
+                tracing::error!("Failed to publish Action Message to P2P network: {}", e);
+                JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Failed to broadcast: {}", e)) }
             }
         }
-    };
-
-    if !is_valid {
-        return Err(kinetic_core::error::RestApiError::BadRequest(
-            "Action message validation failed".to_string(),
-        )
-        .into());
-    }
-
-    // Serialize and gossip
-    let payload_bytes = match serde_json::to_vec(&msg) {
-        Ok(b) => b,
-        Err(e) => {
-            return Err(
-                kinetic_core::error::RestApiError::InternalServerError(format!(
-                    "Serialization failed: {}",
-                    e
-                ))
-                .into(),
-            );
-        }
-    };
-
-    let mut envelope = vec![kinetic_types::network::NetworkOpcode::Action as u8];
-    envelope.extend(payload_bytes);
-
-    match state
-        .network
-        .broadcast_gossip(kinetic_core::constants::GOSSIP_TOPIC_GLOBAL, envelope)
-        .await
-    {
-        Ok(_) => {
-            tracing::info!("Successfully published Action Message to the Gossip network");
-            Ok(Json(PublishResponse {
-                status: "success".to_string(),
-                message: "Action action accepted and routed to P2P network".to_string(),
-            }))
-        }
-        Err(e) => {
-            let err = kinetic_core::error::ActionError::P2pPublishFailed;
-            tracing::error!(
-                error_code = err.code(),
-                "Failed to publish Action Message to P2P network: {}",
-                e
-            );
-            Err(
-                kinetic_core::error::RestApiError::InternalServerError(format!(
-                    "Failed to broadcast: {}",
-                    e
-                ))
-                .into(),
-            )
-        }
-    }
+    })
 }
