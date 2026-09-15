@@ -53,7 +53,7 @@ async fn get_safe_current_kyn() -> u64 {
 }
 
 /// Fetches the real-time DHT heartbeat status of all locally owned names.
-pub fn handle_get_heartbeats(_params: Option<Value>) -> JsonResponse {
+pub fn handle_get_heartbeat(_params: Option<Value>) -> JsonResponse {
     RUNTIME.get().unwrap().block_on(async {
         let owned_key = constants::DB_PREFIX_OWNED_NAMES;
         let owned_names: Vec<String> = match get_storage().get(owned_key) {

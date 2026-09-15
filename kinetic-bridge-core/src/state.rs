@@ -27,3 +27,25 @@ pub fn get_keypair() -> KineticKeypair {
 pub fn get_atlas_nsps() -> &'static RwLock<HashSet<String>> {
     ATLAS_NSPS.get_or_init(|| RwLock::new(HashSet::new()))
 }
+
+use std::collections::HashMap;
+use std::sync::Mutex;
+use tokio::sync::Semaphore;
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct VdfTaskStatus {
+    pub status: String,
+    pub iterations: u64,
+    pub progress: u64,
+    pub error: Option<String>,
+}
+
+pub static VDF_TASKS: OnceLock<Arc<Mutex<HashMap<String, VdfTaskStatus>>>> = OnceLock::new();
+pub static VDF_SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
+
+pub fn get_vdf_tasks() -> Arc<Mutex<HashMap<String, VdfTaskStatus>>> {
+    VDF_TASKS.get_or_init(|| Arc::new(Mutex::new(HashMap::new()))).clone()
+}
+
+pub fn get_vdf_semaphore() -> Arc<Semaphore> {
+    VDF_SEMAPHORE.get_or_init(|| Arc::new(Semaphore::new(1))).clone() // 1 concurrent VDF by default
+}

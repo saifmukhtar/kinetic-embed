@@ -71,9 +71,9 @@ pub fn execute_command(json_input: &str) -> String {
         
         "get_time" => commands::time::handle_get_time(req.params),
         
-        "create_session" => commands::auth::handle_create_session(req.params),
-        "list_sessions" => commands::auth::handle_list_sessions(req.params),
-        "revoke_session" => commands::auth::handle_revoke_session(req.params),
+        // "create_session" => commands::auth::handle_create_session(req.params),
+        // "list_sessions" => commands::auth::handle_list_sessions(req.params),
+        // "revoke_session" => commands::auth::handle_revoke_session(req.params),
         
         "atlas_sync" => commands::atlas::handle_atlas_sync(req.params),
         
@@ -89,10 +89,10 @@ pub fn execute_command(json_input: &str) -> String {
         "post_heartbeat" => commands::heartbeat::handle_post_heartbeat(req.params),
         "post_fat_heartbeat" => commands::heartbeat::handle_post_fat_heartbeat(req.params),
         
-        "macro_register_name" => commands::macro_api::handle_macro_register_name(req.params),
-        "macro_renew_name" => commands::macro_api::handle_macro_renew_name(req.params),
-        "macro_tasks" => commands::macro_api::handle_macro_tasks(req.params),
-        "macro_status" => commands::macro_api::handle_macro_status(req.params),
+        // "macro_register_name" => commands::macro_api::handle_macro_register_name(req.params),
+        // "macro_renew_name" => commands::macro_api::handle_macro_renew_name(req.params),
+        // "macro_tasks" => commands::macro_api::handle_macro_tasks(req.params),
+        // "macro_status" => commands::macro_api::handle_macro_status(req.params),
         
         "shutdown" => commands::system::handle_shutdown(req.params),
         "restart" => commands::system::handle_restart(req.params),

@@ -19,3 +19,4 @@ kinetic-primitives = { path = "/home/saif/kinetic/kinetic-primitives" }
 kinetic-kid = { path = "/home/saif/kinetic/kinetic-kid" }
 kinetic-vdf = { path = "/home/saif/kinetic/kinetic-vdf" }
 hex = "0.4.3"
+tracing = "0.1"
