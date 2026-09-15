@@ -42,34 +42,10 @@ pub fn execute_command(json_input: &str) -> String {
     };
 
     let response = match req.method.as_str() {
-        "get_action_status" => commands::action::handle_get_action_status(),
-        "get_prime_names" => commands::action::handle_get_prime_names(),
-        "get_infra_names" => commands::action::handle_get_infra_names(),
-        
-        "get_config" => commands::config::handle_get_config(),
-        "network_status" => commands::config::handle_network_status(),
-        "network_bootstrap" => commands::config::handle_network_bootstrap(),
-        
-        "get_heartbeats" => commands::heartbeat::handle_get_heartbeats(),
-        "post_heartbeat" => commands::heartbeat::handle_post_heartbeat(req.params),
-        
-        "shutdown" => commands::system::handle_shutdown(),
-        "restart" => commands::system::handle_restart(),
-        
-        "get_zone" => commands::zone::handle_get_zone(req.params.clone()),
-        
-        "list_kids" => commands::kid::handle_list_kids(),
-        "fetch_kid" => commands::kid::handle_fetch_kid(req.params.clone()),
-        "generate_kid" => commands::kid::handle_generate_kid(req.params.clone()),
-        
-        "publish_action" => commands::publish::handle_publish_action(req.params.clone()),
-        
-        "get_difficulty" => commands::consensus::handle_get_difficulty(req.params.clone()),
-        "validate_name" => commands::consensus::handle_validate_name(req.params.clone()),
         _ => JsonResponse {
             status: "error".to_string(),
             data: None,
-            error: Some(format!("Unknown method: {}", req.method)),
+            error: Some(format!("Unknown method or bridge under construction: {}", req.method)),
         },
     };
 

@@ -2132,6 +2132,7 @@ dependencies = [
  "argon2",
  "async-trait",
  "base64 0.23.1",
+ "bincode",
  "bytes",
  "drand-verify",
  "ed25519-dalek",
