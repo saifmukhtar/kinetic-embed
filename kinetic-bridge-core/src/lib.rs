@@ -72,10 +72,6 @@ pub fn execute_command(json_input: &str) -> String {
         
         "get_time" => commands::time::handle_get_time(req.params),
         
-        // "create_session" => commands::auth::handle_create_session(req.params),
-        // "list_sessions" => commands::auth::handle_list_sessions(req.params),
-        // "revoke_session" => commands::auth::handle_revoke_session(req.params),
-        
         "atlas_sync" => commands::atlas::handle_atlas_sync(req.params),
         
         "get_difficulty" => commands::consensus::handle_get_difficulty(req.params),
@@ -122,4 +118,39 @@ pub fn execute_command(json_input: &str) -> String {
     serde_json::to_string(&response).unwrap_or_else(|_| {
         r#"{"status":"error","error":"Failed to serialize response"}"#.to_string()
     })
+}
+
+/// Invokes a Kinetic command from the native mobile side (Kotlin/Swift).
+/// The caller MUST free the returned string using `free_kinetic_string`.
+#[unsafe(no_mangle)]
+pub extern "C" fn invoke_kinetic_command(req_ptr: *const std::ffi::c_char) -> *mut std::ffi::c_char {
+    if req_ptr.is_null() {
+        let err = r#"{"status":"error","error":"Request string is null"}"#;
+        return std::ffi::CString::new(err).unwrap().into_raw();
+    }
+
+    let req_str = unsafe {
+        match std::ffi::CStr::from_ptr(req_ptr).to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                let err = r#"{"status":"error","error":"Request string is not valid UTF-8"}"#;
+                return std::ffi::CString::new(err).unwrap().into_raw();
+            }
+        }
+    };
+
+    let response_str = execute_command(req_str);
+    
+    // We unwrap here safely because our JSON strings shouldn't contain null bytes
+    std::ffi::CString::new(response_str).unwrap().into_raw()
+}
+
+/// Frees a string previously allocated by `invoke_kinetic_command`.
+#[unsafe(no_mangle)]
+pub extern "C" fn free_kinetic_string(ptr: *mut std::ffi::c_char) {
+    if !ptr.is_null() {
+        unsafe {
+            let _ = std::ffi::CString::from_raw(ptr);
+        }
+    }
 }
