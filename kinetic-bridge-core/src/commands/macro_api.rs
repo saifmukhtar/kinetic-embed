@@ -13,12 +13,11 @@
 //!    status map at each cryptographic milestone.
 //! 5. The UI periodically polls `/api/v1/macro/tasks/{task_id}` to display a real-time progress bar.
 
-use super::*;
-use axum::{
-    Json,
-    extract::{Extension, Path, State},
-};
-use kinetic_core::traits::KynProvider;
+use crate::JsonResponse;
+use serde_json::Value;
+use crate::state::{get_vdf_tasks, get_vdf_semaphore, get_storage, get_network, RUNTIME, VdfTaskStatus};
+use kinetic_core::traits::StorageEngine;
+use tracing;
 
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -48,48 +47,43 @@ pub struct VdfRegisterRequest {
 /// # Errors
 ///
 /// Returns an error if a VDF task is already running.
-pub async fn handle_macro_register_name(
-    Extension(role): Extension<Role>,
-    State(state): State<ApiState>,
-    Json(req): Json<VdfRegisterRequest>,
-) -> Result<Json<serde_json::Value>, crate::api::error::AppError> {
-    if !role.can_vdf() {
-        return Err(crate::api::error::AppError::from(
-            kinetic_core::error::RestApiError::InsufficientPrivileges,
-        ));
-    }
+pub fn handle_macro_register_name(params: Option<Value>) -> JsonResponse {
+    let req: VdfRegisterRequest = match params.as_ref() {
+        Some(p) => match serde_json::from_value(p.clone()) {
+            Ok(r) => r,
+            Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(e.to_string()) },
+        },
+        None => return JsonResponse { status: "error".to_string(), data: None, error: Some("Missing params".to_string()) }
+    };
+
     let fqdn = kinetic_core::types::normalize_name(&req.name);
-    kinetic_core::types::is_valid_apex_name(&fqdn)?;
+    if let Err(e) = kinetic_core::types::is_valid_apex_name(&fqdn) {
+        return JsonResponse { status: "error".to_string(), data: None, error: Some(e.to_string()) };
+    }
 
     const MAX_USER_ITERATIONS: u64 = 10_000_000;
     if req.iterations.unwrap_or(0) > MAX_USER_ITERATIONS {
-        return Err(crate::api::error::AppError(
-            kinetic_core::error::VdfError::MaxIterationsExceeded.into(),
-        ));
+        return JsonResponse { status: "error".to_string(), data: None, error: Some("Max iterations exceeded".to_string()) };
     }
     let task_id = uuid::Uuid::new_v4().to_string();
 
+    let tasks_arc = get_vdf_tasks();
     // Store initial task state, ensuring only 1 is active
     {
-        let mut tasks = state.vdf_tasks.lock().unwrap_or_else(|e| e.into_inner());
+        let mut tasks = tasks_arc.lock().unwrap_or_else(|e| e.into_inner());
 
         let active_tasks = tasks
             .values()
             .filter(|t| t.progress < 100 && t.error.is_none())
             .count();
         if active_tasks >= 1 {
-            return Err(kinetic_core::error::RegistrationError::AlreadyInProgress {
-                name: fqdn.clone(),
-            }
-            .into());
+            return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Registration already in progress for {}", fqdn)) };
         }
 
         tasks.retain(|_, t| t.progress < 100 && t.error.is_none());
 
         if tasks.len() >= 50 {
-            return Err(crate::api::error::AppError(
-                kinetic_core::error::VdfError::TooManyTasks.into(),
-            ));
+            return JsonResponse { status: "error".to_string(), data: None, error: Some("Too many tasks".to_string()) };
         }
 
         tasks.insert(
@@ -104,13 +98,13 @@ pub async fn handle_macro_register_name(
     }
 
     // Spawn blocking backgkyn task
-    let tasks_clone = state.vdf_tasks.clone();
-    let network_clone = state.network.clone();
-    let storage_clone = state.storage.clone();
+    let tasks_clone = get_vdf_tasks();
+    let network_clone = get_network();
+    let storage_clone = get_storage();
     let task_id_clone = task_id.clone();
     let iterations = req.iterations.unwrap_or(4_194_304);
 
-    tokio::spawn(async move {
+    RUNTIME.get().unwrap().spawn(async move {
         // Step 1: KYN Time Oracle
         update_task_status(&tasks_clone, &task_id_clone, "Fetching KYN Time Oracle", 10);
         let kyn_provider: std::sync::Arc<dyn kinetic_core::traits::KynProvider> = std::sync::Arc::new(
@@ -150,7 +144,7 @@ pub async fn handle_macro_register_name(
         };
         let pubkey = keypair.pubkey_bytes();
         let mut salt = [0u8; 32];
-        if let Err(e) = getrandom::fill(&mut salt) {
+        if let Err(e) = getrandom::getrandom(&mut salt) {
             update_task_error(
                 &tasks_clone,
                 &task_id_clone,
@@ -192,7 +186,7 @@ pub async fn handle_macro_register_name(
         let vdf_engine = kinetic_vdf::RsaVdfEngine::new();
         let challenge_clone = challenge.clone();
 
-        let permit_res = state.vdf_semaphore.clone().acquire_owned().await;
+        let permit_res = get_vdf_semaphore().acquire_owned().await;
         if permit_res.is_err() {
             update_task_error(&tasks_clone, &task_id_clone, "VDF Semaphore closed".into());
             return;
@@ -369,7 +363,7 @@ pub async fn handle_macro_register_name(
 
         // Save to internal storage so Dashboard can see it
         let fqdn_clone = fqdn.clone();
-        let _lock = crate::api::OWNED_NAMES_LOCK
+        let _lock = crate::state::get_owned_names_lock()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let mut owned = Vec::new();
@@ -406,10 +400,14 @@ pub async fn handle_macro_register_name(
         update_task_status(&tasks_clone, &task_id_clone, "Complete", 100);
     });
 
-    Ok(Json(serde_json::json!({
-        "task_id": task_id,
-        "message": "VDF generation started"
-    })))
+    JsonResponse {
+        status: "success".to_string(),
+        data: Some(serde_json::json!({
+            "task_id": task_id,
+            "message": "VDF generation started"
+        })),
+        error: None,
+    }
 }
 
 /// Handles API requests to renew a Kinetic name via a new VDF proof, leveraging an existing reveal.
@@ -417,32 +415,30 @@ pub async fn handle_macro_register_name(
 /// # Errors
 ///
 /// Returns an error if there are issues finding the previous reveal or scheduling the VDF task.
-pub async fn handle_macro_renew_name(
-    Extension(role): Extension<Role>,
-    State(state): State<ApiState>,
-    Json(req): Json<NameRenewRequest>,
-) -> Result<Json<serde_json::Value>, crate::api::error::AppError> {
-    if !role.can_vdf() {
-        return Err(crate::api::error::AppError::from(
-            kinetic_core::error::RestApiError::InsufficientPrivileges,
-        ));
-    }
+pub fn handle_macro_renew_name(params: Option<Value>) -> JsonResponse {
+    let req: NameRenewRequest = match params.as_ref() {
+        Some(p) => match serde_json::from_value(p.clone()) {
+            Ok(r) => r,
+            Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(e.to_string()) },
+        },
+        None => return JsonResponse { status: "error".to_string(), data: None, error: Some("Missing params".to_string()) }
+    };
+
     let fqdn = kinetic_core::types::normalize_name(&req.name);
-    kinetic_core::types::is_valid_apex_name(&fqdn)?;
+    if let Err(e) = kinetic_core::types::is_valid_apex_name(&fqdn) {
+        return JsonResponse { status: "error".to_string(), data: None, error: Some(e.to_string()) };
+    }
 
     const MAX_USER_ITERATIONS: u64 = 10_000_000;
     if req.iterations.unwrap_or(0) > MAX_USER_ITERATIONS {
-        return Err(crate::api::error::AppError(
-            kinetic_core::error::VdfError::MaxIterationsExceeded.into(),
-        ));
+        return JsonResponse { status: "error".to_string(), data: None, error: Some("Max iterations exceeded".to_string()) };
     }
-    let mut tasks = state.vdf_tasks.lock().unwrap_or_else(|e| e.into_inner());
+    let tasks_arc = get_vdf_tasks();
+    let mut tasks = tasks_arc.lock().unwrap_or_else(|e| e.into_inner());
 
     tasks.retain(|_, t| t.progress < 100 && t.error.is_none());
     if tasks.len() >= 50 {
-        return Err(crate::api::error::AppError(
-            kinetic_core::error::VdfError::TooManyTasks.into(),
-        ));
+        return JsonResponse { status: "error".to_string(), data: None, error: Some("Too many tasks".to_string()) };
     }
 
     let task_id = uuid::Uuid::new_v4().to_string();
@@ -455,13 +451,13 @@ pub async fn handle_macro_renew_name(
     tasks.insert(task_id.clone(), initial_task.clone());
     drop(tasks);
 
-    let tasks_clone = state.vdf_tasks.clone();
-    let network_clone = state.network.clone();
-    let storage_clone = state.storage.clone();
+    let tasks_clone = get_vdf_tasks();
+    let network_clone = get_network();
+    let storage_clone = get_storage();
     let task_id_clone = task_id.clone();
     let iterations = req.iterations.unwrap_or(4_194_304);
 
-    tokio::spawn(async move {
+    RUNTIME.get().unwrap().spawn(async move {
         // Step 1: Read previous Reveal from database storage
         update_task_status(&tasks_clone, &task_id_clone, "Loading previous reveal", 5);
         let local_reveal_key = format!("{}{}", kinetic_core::constants::DB_PREFIX_REVEAL, fqdn);
@@ -536,7 +532,7 @@ pub async fn handle_macro_renew_name(
         };
         let pubkey_bytes = keypair.pubkey_bytes();
         let mut salt = [0u8; 32];
-        if let Err(e) = getrandom::fill(&mut salt) {
+        if let Err(e) = getrandom::getrandom(&mut salt) {
             update_task_error(
                 &tasks_clone,
                 &task_id_clone,
@@ -581,7 +577,7 @@ pub async fn handle_macro_renew_name(
         let vdf_engine = kinetic_vdf::RsaVdfEngine::new();
         let challenge_clone = challenge.clone();
 
-        let permit_res = state.vdf_semaphore.clone().acquire_owned().await;
+        let permit_res = get_vdf_semaphore().acquire_owned().await;
         if permit_res.is_err() {
             update_task_error(&tasks_clone, &task_id_clone, "VDF Semaphore closed".into());
             return;
@@ -708,10 +704,14 @@ pub async fn handle_macro_renew_name(
         update_task_status(&tasks_clone, &task_id_clone, "Complete", 100);
     });
 
-    Ok(Json(serde_json::json!({
-        "task_id": task_id,
-        "message": "Renewal VDF generation started"
-    })))
+    JsonResponse {
+        status: "success".to_string(),
+        data: Some(serde_json::json!({
+            "task_id": task_id,
+            "message": "Renewal VDF generation started"
+        })),
+        error: None,
+    }
 }
 
 pub(crate) fn update_task_status(
@@ -726,6 +726,7 @@ pub(crate) fn update_task_status(
         task.status = status.to_string();
         task.progress = progress;
     }
+    crate::callback::emit_event("macro_status_update", serde_json::json!({"task_id": id, "status": status, "progress": progress}));
 }
 
 pub(crate) fn update_task_error(
@@ -736,46 +737,41 @@ pub(crate) fn update_task_error(
     if let Ok(mut map) = tasks.lock()
         && let Some(task) = map.get_mut(id)
     {
-        task.error = Some(err);
+        task.error = Some(err.clone());
         task.status = "Failed".to_string();
     }
+    crate::callback::emit_event("macro_error", serde_json::json!({"task_id": id, "error": err}));
 }
 
 /// Retrieves all running or recently completed VDF tasks.
-pub async fn handle_macro_tasks(
-    Extension(role): Extension<Role>,
-    State(state): State<ApiState>,
-) -> Result<Json<serde_json::Value>, crate::api::error::AppError> {
-    if !role.can_vdf() {
-        return Err(crate::api::error::AppError::from(
-            kinetic_core::error::RestApiError::InsufficientPrivileges,
-        ));
-    }
+pub fn handle_macro_tasks(_params: Option<Value>) -> JsonResponse {
+    let tasks_arc = get_vdf_tasks();
     let tasks = {
-        let map = state.vdf_tasks.lock().unwrap_or_else(|e| e.into_inner());
+        let map = tasks_arc.lock().unwrap_or_else(|e| e.into_inner());
         map.clone()
     };
-    Ok(Json(serde_json::to_value(tasks).unwrap_or_default()))
+    JsonResponse {
+        status: "success".to_string(),
+        data: Some(serde_json::to_value(tasks).unwrap_or_default()),
+        error: None,
+    }
 }
 
 /// Retrieves the current progress and status of a VDF task by ID.
-pub async fn handle_macro_status(
-    Extension(role): Extension<Role>,
-    Path(task_id): Path<String>,
-    State(state): State<ApiState>,
-) -> Result<Json<serde_json::Value>, crate::api::error::AppError> {
-    if !role.can_vdf() {
-        return Err(crate::api::error::AppError::from(
-            kinetic_core::error::RestApiError::InsufficientPrivileges,
-        ));
-    }
+pub fn handle_macro_status(params: Option<Value>) -> JsonResponse {
+    let task_id = match params.as_ref().and_then(|p| p.get("task_id")).and_then(|t| t.as_str()) {
+        Some(t) => t.to_string(),
+        None => return JsonResponse { status: "error".to_string(), data: None, error: Some("Missing task_id".to_string()) },
+    };
+    
+    let tasks_arc = get_vdf_tasks();
     let task = {
-        let tasks = state.vdf_tasks.lock().unwrap_or_else(|e| e.into_inner());
+        let tasks = tasks_arc.lock().unwrap_or_else(|e| e.into_inner());
         tasks.get(&task_id).cloned()
     };
 
     match task {
-        Some(t) => Ok(Json(serde_json::to_value(t).unwrap_or_default())),
-        None => Ok(Json(serde_json::json!({"error": "Task not found"}))),
+        Some(t) => JsonResponse { status: "success".to_string(), data: Some(serde_json::to_value(t).unwrap_or_default()), error: None },
+        None => JsonResponse { status: "error".to_string(), data: None, error: Some("Task not found".to_string()) },
     }
 }

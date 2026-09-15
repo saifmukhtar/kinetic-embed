@@ -8,3 +8,4 @@ pub mod nrs;
 pub mod system;
 pub mod time;
 pub mod atlas;
+pub mod macro_api;

@@ -11,6 +11,12 @@ pub static STORAGE: OnceLock<Arc<KineticStorage>> = OnceLock::new();
 pub static NETWORK: OnceLock<NetworkClient> = OnceLock::new();
 pub static KEYPAIR: OnceLock<KineticKeypair> = OnceLock::new();
 pub static ATLAS_NSPS: OnceLock<RwLock<HashSet<String>>> = OnceLock::new();
+pub static OWNED_NAMES_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+pub fn get_owned_names_lock() -> &'static Mutex<()> {
+    OWNED_NAMES_LOCK.get_or_init(|| Mutex::new(()))
+}
+
 pub static GOSSIP_TX: OnceLock<tokio::sync::broadcast::Sender<(String, Vec<u8>, kinetic_network::libp2p::PeerId, kinetic_network::libp2p::gossipsub::MessageId)>> = OnceLock::new();
 
 pub fn get_gossip_tx() -> tokio::sync::broadcast::Sender<(String, Vec<u8>, kinetic_network::libp2p::PeerId, kinetic_network::libp2p::gossipsub::MessageId)> {
