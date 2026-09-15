@@ -1,10 +1,7 @@
 //! API endpoints for consensus math, Name Difficulty Curve (NDC), and name validation.
 
-use crate::api::ApiState;
-use axum::{
-    Json,
-    extract::{Path, Query, State},
-};
+use crate::JsonResponse;
+use serde_json::Value;
 use kinetic_core::consensus_math::ConsensusParams;
 use serde::{Deserialize, Serialize};
 
@@ -110,17 +107,19 @@ fn format_duration(secs: u64) -> String {
 }
 
 /// Retrieves the base difficulty (required VDF iterations) to register a specific name.
-pub async fn handle_get_difficulty(
-    State(state): State<ApiState>,
-    Path(name): Path<String>,
-) -> Result<Json<DifficultyResponse>, crate::api::error::AppError> {
+pub fn handle_get_difficulty(params: Option<Value>) -> JsonResponse {
+    let name = match params.as_ref().and_then(|p| p.get("name")).and_then(|n| n.as_str()) {
+        Some(n) => n.to_string(),
+        None => return JsonResponse { status: "error".to_string(), data: None, error: Some("Missing or invalid 'name'".to_string()) },
+    };
+
     let normalized = kinetic_core::types::names::normalize_name(&name);
     if let Err(e) = kinetic_core::types::names::is_valid_apex_name(&normalized) {
-        return Err(crate::api::error::AppError(kinetic_rpc::ApiError::from(e)));
+        return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Invalid name: {}", e)) };
     }
 
-    let params = ConsensusParams::default();
-    let iterations = params.iterations(&normalized);
+    let consensus_params = ConsensusParams::default();
+    let iterations = consensus_params.iterations(&normalized);
     let apex = kinetic_core::types::names::extract_apex_name(&normalized).to_string();
     let label = apex
         .strip_suffix(kinetic_core::constants::NSP_SUFFIX)
@@ -143,7 +142,8 @@ pub async fn handle_get_difficulty(
         _ => kinetic_core::constants::TARGET_MINUTES as u64,
     };
 
-    let host_speed_ips = state.host_speed_ips;
+    // Mobile fallback prediction baseline (approximate modern smartphone IPS)
+    let host_speed_ips = 100_000;
     let estimated_seconds = iterations / std::cmp::max(host_speed_ips, 1);
 
     let reference_ips = (kinetic_core::constants::BASE_ITERATIONS as f64)
@@ -167,84 +167,104 @@ pub async fn handle_get_difficulty(
         }
     );
 
-    Ok(Json(DifficultyResponse {
-        name: normalized,
-        label,
-        label_length,
-        protocol: ProtocolRequirements {
-            iterations,
-            ndc_tier,
-            network_reference_target_minutes,
-            is_dev_mode: kinetic_core::config::is_dev_mode(),
-        },
-        local_prediction: LocalPrediction {
-            calibrated: true,
-            host_speed_ips,
-            estimated_seconds,
-            estimated_formatted: format_duration(estimated_seconds),
-            hardware_rating: rating_str,
-        },
-    }))
+    JsonResponse {
+        status: "success".to_string(),
+        data: Some(serde_json::to_value(DifficultyResponse {
+            name: normalized,
+            label,
+            label_length,
+            protocol: ProtocolRequirements {
+                iterations,
+                ndc_tier,
+                network_reference_target_minutes,
+                is_dev_mode: kinetic_core::config::is_dev_mode(),
+            },
+            local_prediction: LocalPrediction {
+                calibrated: false,
+                host_speed_ips,
+                estimated_seconds,
+                estimated_formatted: format_duration(estimated_seconds),
+                hardware_rating: rating_str,
+            },
+        }).unwrap()),
+        error: None,
+    }
 }
 
 /// Calculates the decayed takeover difficulty for an idle name.
 /// Requires the client to pass `?kyns_idle=X` in the query string.
-pub async fn handle_takeover_difficulty(
-    State(_state): State<ApiState>,
-    Path(name): Path<String>,
-    Query(query): Query<TakeoverQuery>,
-) -> Result<Json<TakeoverDifficultyResponse>, crate::api::error::AppError> {
-    let normalized = kinetic_core::types::names::normalize_name(&name);
-    let params = ConsensusParams::default();
-    let base_iterations = params.iterations(&normalized);
-
-    let kyns_idle = match query.kyns_idle {
+pub fn handle_takeover_difficulty(params: Option<Value>) -> JsonResponse {
+    let p = match params {
+        Some(p) => p,
+        None => return JsonResponse { status: "error".to_string(), data: None, error: Some("Missing params".to_string()) },
+    };
+    let name = match p.get("name").and_then(|n| n.as_str()) {
+        Some(n) => n.to_string(),
+        None => return JsonResponse { status: "error".to_string(), data: None, error: Some("Missing 'name'".to_string()) },
+    };
+    let kyns_idle = match p.get("kyns_idle").and_then(|n| n.as_u64()) {
         Some(idle) => idle,
-        None => {
-            return Err(crate::api::error::AppError::from(
-                kinetic_core::error::RestApiError::BadRequest(
-                    "Missing required query parameter: kyns_idle".to_string(),
-                ),
-            ));
-        }
+        None => return JsonResponse { status: "error".to_string(), data: None, error: Some("Missing 'kyns_idle'".to_string()) },
     };
 
-    let current_iterations = params.takeover_diff(base_iterations, kyns_idle);
+    let normalized = kinetic_core::types::names::normalize_name(&name);
+    let consensus_params = ConsensusParams::default();
+    let base_iterations = consensus_params.iterations(&normalized);
+
+    let current_iterations = consensus_params.takeover_diff(base_iterations, kyns_idle);
     let decay_multiplier = if base_iterations > 0 {
         current_iterations as f64 / base_iterations as f64
     } else {
         1.0
     };
 
-    Ok(Json(TakeoverDifficultyResponse {
-        name: normalized,
-        base_iterations,
-        kyns_idle,
-        current_iterations,
-        decay_multiplier,
-    }))
+    JsonResponse {
+        status: "success".to_string(),
+        data: Some(serde_json::to_value(TakeoverDifficultyResponse {
+            name: normalized,
+            base_iterations,
+            kyns_idle,
+            current_iterations,
+            decay_multiplier,
+        }).unwrap()),
+        error: None,
+    }
 }
 
 /// Validates a potential name string according to Kinetic's core naming rules.
-pub async fn handle_validate_name(Json(req): Json<ValidateRequest>) -> Json<ValidateResponse> {
+pub fn handle_validate_name(params: Option<Value>) -> JsonResponse {
+    let req: ValidateRequest = match params {
+        Some(p) => match serde_json::from_value(p) {
+            Ok(r) => r,
+            Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Invalid params: {}", e)) },
+        },
+        None => return JsonResponse { status: "error".to_string(), data: None, error: Some("Missing params".to_string()) },
+    };
+
     let normalized = kinetic_core::types::names::normalize_name(&req.name);
     let is_reserved = kinetic_core::types::names::is_reserved_name(&normalized)
         || kinetic_core::types::protocol::is_protocol_name(&normalized);
 
-    match kinetic_core::types::names::is_valid_apex_name(&normalized) {
-        Ok(_) => Json(ValidateResponse {
+    let res = match kinetic_core::types::names::is_valid_apex_name(&normalized) {
+        Ok(_) => ValidateResponse {
             original: req.name,
             normalized,
             is_valid: true,
             is_reserved,
             error: None,
-        }),
-        Err(e) => Json(ValidateResponse {
+        },
+        Err(e) => ValidateResponse {
             original: req.name,
             normalized,
             is_valid: false,
             is_reserved,
             error: Some(e.to_string()),
-        }),
+        },
+    };
+
+    JsonResponse {
+        status: "success".to_string(),
+        data: Some(serde_json::to_value(res).unwrap()),
+        error: None,
     }
 }
