@@ -1,11 +1,12 @@
 pub mod action;
+pub mod atlas;
+pub mod bootstrap;
 pub mod config;
 pub mod consensus;
 pub mod gossip;
 pub mod heartbeat;
 pub mod kid;
+pub mod macro_api;
 pub mod nrs;
 pub mod system;
 pub mod time;
-pub mod atlas;
-pub mod macro_api;

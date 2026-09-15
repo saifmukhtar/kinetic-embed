@@ -17,9 +17,9 @@ pub fn get_owned_names_lock() -> &'static Mutex<()> {
     OWNED_NAMES_LOCK.get_or_init(|| Mutex::new(()))
 }
 
-pub static GOSSIP_TX: OnceLock<tokio::sync::broadcast::Sender<(String, Vec<u8>, kinetic_network::libp2p::PeerId, kinetic_network::libp2p::gossipsub::MessageId)>> = OnceLock::new();
+pub static GOSSIP_TX: OnceLock<tokio::sync::broadcast::Sender<(String, Vec<u8>, kinetic_network::libp2p::gossipsub::MessageId, kinetic_network::libp2p::PeerId)>> = OnceLock::new();
 
-pub fn get_gossip_tx() -> tokio::sync::broadcast::Sender<(String, Vec<u8>, kinetic_network::libp2p::PeerId, kinetic_network::libp2p::gossipsub::MessageId)> {
+pub fn get_gossip_tx() -> tokio::sync::broadcast::Sender<(String, Vec<u8>, kinetic_network::libp2p::gossipsub::MessageId, kinetic_network::libp2p::PeerId)> {
     GOSSIP_TX.get_or_init(|| {
         let (tx, _) = tokio::sync::broadcast::channel(1000);
         tx
