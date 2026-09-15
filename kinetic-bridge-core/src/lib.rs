@@ -42,6 +42,75 @@ pub fn execute_command(json_input: &str) -> String {
     };
 
     let response = match req.method.as_str() {
+        "get_action_status" => commands::action::handle_get_action_status(req.params),
+        "get_action_names" => commands::action::handle_get_action_names(req.params),
+        "publish_action" => commands::action::handle_publish_action(req.params),
+        
+        "get_config" => commands::config::handle_get_config(req.params),
+        "set_config" => commands::config::handle_set_config(req.params),
+        "owned_names" => commands::config::handle_owned_names(req.params),
+        "network_status" => commands::config::handle_network_status(req.params),
+        "network_bootstrap" => commands::config::handle_network_bootstrap(req.params),
+        "network_nat" => commands::config::handle_network_nat(req.params),
+        "network_banned" => commands::config::handle_network_banned(req.params),
+        "network_peers" => commands::config::handle_network_peers(req.params),
+        "get_health" => commands::config::handle_get_health(req.params),
+        "get_peer_id" => commands::config::handle_get_peer_id(req.params),
+        "dns_flush" => commands::config::handle_dns_flush(req.params),
+        
+        "list_kids" => commands::kid::handle_list_kids(req.params),
+        "fetch_kid" => commands::kid::handle_fetch_kid(req.params),
+        "generate_kid" => commands::kid::handle_generate_kid(req.params),
+        "rotate_kid" => commands::kid::handle_rotate_kid(req.params),
+        "revoke_kid" => commands::kid::handle_revoke_kid(req.params),
+        "get_kid_manifest" => commands::kid::handle_get_kid_manifest(req.params),
+        "update_kid_manifest" => commands::kid::handle_update_kid_manifest(req.params),
+        "resolve_kid" => commands::kid::handle_resolve_kid(req.params),
+        "publish_kid" => commands::kid::handle_publish_kid(req.params),
+        "publish_manifest" => commands::kid::handle_publish_manifest(req.params),
+        
+        "get_time" => commands::time::handle_get_time(req.params),
+        
+        "create_session" => commands::auth::handle_create_session(req.params),
+        "list_sessions" => commands::auth::handle_list_sessions(req.params),
+        "revoke_session" => commands::auth::handle_revoke_session(req.params),
+        
+        "atlas_sync" => commands::atlas::handle_atlas_sync(req.params),
+        
+        "get_difficulty" => commands::consensus::handle_get_difficulty(req.params),
+        "takeover_difficulty" => commands::consensus::handle_takeover_difficulty(req.params),
+        "validate_name" => commands::consensus::handle_validate_name(req.params),
+        
+        "gossip_subscribe" => commands::gossip::handle_gossip_subscribe(req.params),
+        "gossip_publish" => commands::gossip::handle_gossip_publish(req.params),
+        "get_gossip_topics" => commands::gossip::handle_get_gossip_topics(req.params),
+        
+        "get_heartbeat" => commands::heartbeat::handle_get_heartbeat(req.params),
+        "post_heartbeat" => commands::heartbeat::handle_post_heartbeat(req.params),
+        "post_fat_heartbeat" => commands::heartbeat::handle_post_fat_heartbeat(req.params),
+        
+        "macro_register_name" => commands::macro_api::handle_macro_register_name(req.params),
+        "macro_renew_name" => commands::macro_api::handle_macro_renew_name(req.params),
+        "macro_tasks" => commands::macro_api::handle_macro_tasks(req.params),
+        "macro_status" => commands::macro_api::handle_macro_status(req.params),
+        
+        "shutdown" => commands::system::handle_shutdown(req.params),
+        "restart" => commands::system::handle_restart(req.params),
+        "get_ca_cert" => commands::system::handle_get_ca_cert(req.params),
+        
+        "publish_record" => commands::nrs::handle_publish_record(req.params),
+        "publish_commit" => commands::nrs::handle_publish_commit(req.params),
+        "resolve_name" => commands::nrs::handle_resolve_name(req.params),
+        "verify_quorum" => commands::nrs::handle_verify_quorum(req.params),
+        "get_reserved_names" => commands::nrs::handle_get_reserved_names(req.params),
+        "get_zone" => commands::nrs::handle_get_zone(req.params),
+        "post_zone" => commands::nrs::handle_post_zone(req.params),
+        "publish_zone" => commands::nrs::handle_publish_zone(req.params),
+        "post_local_zone" => commands::nrs::handle_post_local_zone(req.params),
+        "delete_local_zone" => commands::nrs::handle_delete_local_zone(req.params),
+        "get_local_zone" => commands::nrs::handle_get_local_zone(req.params),
+        "publish_fat_zone" => commands::nrs::handle_publish_fat_zone(req.params),
+        
         _ => JsonResponse {
             status: "error".to_string(),
             data: None,

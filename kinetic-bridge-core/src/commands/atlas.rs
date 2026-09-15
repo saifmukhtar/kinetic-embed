@@ -1,0 +1,75 @@
+use crate::api::ApiState;
+use axum::{Json, extract::State};
+use serde::{Deserialize, Serialize};
+
+/// Payload sent by the kinetic-atlas bridge containing the list of registered foreign NSPs.
+#[derive(Deserialize, Serialize, Debug)]
+pub struct AtlasSyncPayload {
+    /// List of NSPs supported by the atlas bridge.
+    pub nsps: Vec<String>,
+}
+
+/// Webhook endpoint for the kinetic-atlas bridge to push updated NSP routing tables.
+/// This updates the in-memory HashSet used by the DNS resolver.
+pub async fn handle_atlas_sync(
+    axum::extract::Extension(role): axum::extract::Extension<crate::api::Role>,
+    State(state): State<ApiState>,
+    Json(payload): Json<AtlasSyncPayload>,
+) -> Result<Json<serde_json::Value>, crate::api::error::AppError> {
+    if !role.can_atlas() {
+        return Err(crate::api::error::AppError::from(
+            kinetic_core::error::RestApiError::InsufficientPrivileges,
+        ));
+    }
+
+    let mut clean_nsps = std::collections::HashSet::new();
+
+    // Normalize and add each NSP
+    for nsp in payload.nsps {
+        let mut t = nsp.trim().to_lowercase();
+        if !t.starts_with('.') {
+            t.insert(0, '.');
+        }
+        // Must be longer than just "."
+        if t.len() > 1 {
+            clean_nsps.insert(t);
+        }
+    }
+
+    match state.atlas_nsps.write() {
+        Ok(mut lock) => {
+            let count = clean_nsps.len();
+            tracing::info!(
+                "Atlas Bridge synced {} NSPs successfully: {:?}",
+                count,
+                clean_nsps
+            );
+
+            *lock = clean_nsps;
+
+            Ok(Json(serde_json::json!({
+                "status": "success",
+                "synced_count": count
+            })))
+        }
+        Err(_) => {
+            let sys_err = kinetic_core::error::SystemError::MutexPoisoned("atlas_nsps".into());
+            tracing::error!(error = ?sys_err, "Failed to acquire write lock on atlas_nsps");
+            Err(crate::api::error::AppError(kinetic_rpc::ApiError {
+                error_type: format!(
+                    "{}/errors/{}",
+                    kinetic_core::constants::DOCS_URL,
+                    sys_err.code()
+                ),
+                title: "Internal Server Error".to_string(),
+                status: 500,
+                detail: sys_err.user_message(),
+                instance: None,
+                code: sys_err.code().to_string(),
+                retryable: sys_err.is_retryable(),
+                details: serde_json::Value::Null,
+                request_id: "".to_string(),
+            }))
+        }
+    }
+}

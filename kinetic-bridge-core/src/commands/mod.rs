@@ -1,0 +1,905 @@
+//! HTTP REST API router, authentication middleware, state management, and server bootstrap.
+//!
+//! ## Layer 8 Architecture: The Desktop/CLI Bridge
+//! This module represents the absolute edge of the Kinetic workspace. It is a synchronous 
+//! `axum` HTTP server designed explicitly to receive commands from the local Electron Desktop UI 
+//! and the local `kinetic-cli`.
+//!
+//! ### The Data Flow
+//! The API strictly follows a **Request-Validate-Queue-Respond** pattern:
+//! 1. Receives JSON from localhost (usually port `16001`).
+//! 2. Validates payloads strictly using `kinetic_core::types`.
+//! 3. Queues outbound operations into the asynchronous `NetworkClient` (MPSC bounded channels).
+//! 4. Returns JSON via synchronous HTTP response.
+//!
+//! ### Security Boundaries
+//! This API is **strictly local**. It binds exclusively to `127.0.0.1`. If external network interfaces 
+//! are specified, the daemon enforces JWT Bearer authentication on every route except `/api/v1/ping`.
+
+use axum::{Router, extract::State, http::StatusCode, routing::post};
+use kinetic_core::traits::{KynProvider, StorageEngine};
+
+use kinetic_network::NetworkClient;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+/// API endpoints for action management.
+pub mod action;
+/// API endpoints for Atlas NSP sync.
+pub mod atlas;
+/// API endpoints for authentication.
+pub mod auth;
+/// API endpoints for configuration management.
+pub mod config;
+pub mod consensus;
+/// Error mappings and Newtype wrappers for HTTP response conversion.
+pub mod error;
+/// API endpoints for streaming Gossip.
+pub mod gossip;
+pub mod heartbeat;
+/// API endpoints for KID local management.
+pub mod kid;
+/// Complex multi-step orchestrator endpoints (Macro API).
+pub mod macro_api;
+/// API endpoints for Node Metrics and Telemetry
+pub mod metric;
+/// API endpoints for Name Resolution System
+pub mod nrs;
+/// API endpoints for system management.
+pub mod system;
+/// API endpoints for streaming Kinetic time.
+pub mod time;
+
+use atlas::*;
+use config::*;
+use gossip::*;
+use heartbeat::*;
+use kid::{
+    handle_fetch_kid, handle_generate_kid, handle_get_kid_manifest, handle_list_kids,
+    handle_publish_kid, handle_publish_manifest, handle_resolve_kid, handle_revoke_kid,
+    handle_rotate_kid, handle_update_kid_manifest,
+};
+use macro_api::*;
+use nrs::{
+    handle_delete_local_zone, handle_get_local_zone, handle_get_reserved_names, handle_get_zone,
+    handle_post_local_zone, handle_post_zone, handle_publish_commit, handle_publish_fat_zone,
+    handle_publish_record, handle_publish_zone, handle_resolve_name, handle_verify_quorum,
+};
+use time::*;
+/// Represents the status of an ongoing Verifiable Delay Function (VDF) task.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct VdfTaskStatus {
+    /// The current status of the task (e.g. 'running', 'completed', 'failed').
+    pub status: String,
+    /// The number of iterations the VDF requires.
+    pub iterations: u64,
+    /// The number of iterations completed so far.
+    pub progress: u64,
+    /// An optional error message if the task failed.
+    pub error: Option<String>,
+}
+
+/// The access role granted by the provided token.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Role {
+    /// True if the token grants full admin privileges.
+    pub is_admin: bool,
+    /// True if the token grants KID (Kinetic Identity Document) management privileges.
+    pub kid: bool,
+    /// True if the token grants Name Resolution System (NRS) routing privileges.
+    pub nrs: bool,
+    /// True if the token grants VDF registration/renewal privileges.
+    pub vdf: bool,
+    /// True if the token grants network action privileges.
+    pub action: bool,
+    /// True if the token grants raw P2P gossip privileges.
+    pub gossip: bool,
+    /// True if the token grants metrics/telemetry read privileges.
+    pub metric: bool,
+    /// True if the token grants system lifecycle (restart/shutdown) privileges.
+    pub system: bool,
+    /// True if the token grants atlas bridge privileges.
+    pub atlas: bool,
+    /// True if the token grants heartbeat liveness privileges.
+    pub heartbeat: bool,
+}
+
+impl Role {
+    /// Returns whether this role can manage KID records.
+    pub fn can_kid(&self) -> bool {
+        self.is_admin || self.kid
+    }
+    /// Returns whether this role can manage NRS records.
+    pub fn can_nrs(&self) -> bool {
+        self.is_admin || self.nrs
+    }
+    /// Returns whether this role can perform VDF operations.
+    pub fn can_vdf(&self) -> bool {
+        self.is_admin || self.vdf
+    }
+    /// Returns whether this role can trigger network actions.
+    pub fn can_action(&self) -> bool {
+        self.is_admin || self.action
+    }
+    /// Returns whether this role can broadcast raw P2P gossip.
+    pub fn can_gossip(&self) -> bool {
+        self.is_admin || self.gossip
+    }
+    /// Returns whether this role can read metrics and telemetry.
+    pub fn can_metric(&self) -> bool {
+        self.is_admin || self.metric
+    }
+    /// Returns whether this role can trigger system lifecycle events.
+    pub fn can_system(&self) -> bool {
+        self.is_admin || self.system
+    }
+    /// Returns whether this role can interact with the atlas bridge.
+    pub fn can_atlas(&self) -> bool {
+        self.is_admin || self.atlas
+    }
+    /// Returns whether this role can broadcast heartbeats.
+    pub fn can_heartbeat(&self) -> bool {
+        self.is_admin || self.heartbeat
+    }
+    /// Returns whether this role is a full administrator.
+    pub fn is_admin(&self) -> bool {
+        self.is_admin
+    }
+}
+
+/// The set of generated scoped API tokens for this daemon.
+#[derive(Clone)]
+pub struct ApiTokens {
+    /// The admin token.
+    pub admin: String,
+    /// The KID token.
+    pub kid: String,
+    /// The NRS token.
+    pub nrs: String,
+    /// The VDF token.
+    pub vdf: String,
+    /// The action token.
+    pub action: String,
+    /// The gossip token.
+    pub gossip: String,
+    /// The metric token.
+    pub metric: String,
+    /// The system token.
+    pub system: String,
+    /// The atlas token.
+    pub atlas: String,
+    /// The heartbeat token.
+    pub heartbeat: String,
+}
+
+/// Global lock to synchronize writes to the owned names storage list.
+pub static OWNED_NAMES_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Holds the global state for the API server, including network, storage, and authentication.
+#[derive(Clone)]
+pub struct ApiState {
+    /// The P2P network client.
+    pub network: NetworkClient,
+    /// Local storage engine interface.
+    pub storage: Arc<dyn StorageEngine>,
+    /// The daemon's identity keypair (used for signing manual heartbeats).
+    pub daemon_keypair: kinetic_primitives::keys::KineticKeypair,
+    /// Pre-calibrated host CPU speed for VDF time estimation (Iterations Per Second).
+    pub host_speed_ips: u64,
+    /// Map of background VDF tasks.
+    pub vdf_tasks: Arc<Mutex<HashMap<String, VdfTaskStatus>>>,
+
+    /// API authentication tokens to restrict access by role.
+    pub tokens: Arc<ApiTokens>,
+    /// The proxy DNS cache.
+    pub dns_cache: Arc<tokio::sync::Mutex<crate::proxy::dns_cache::DnsCache>>,
+    /// Semaphore to restrict concurrent VDF computations.
+    pub vdf_semaphore: Arc<tokio::sync::Semaphore>,
+    /// The IP address this daemon is bound to.
+    pub bind_ip: String,
+    /// Gossip channel sender for SSE streams.
+    pub gossip_tx: tokio::sync::broadcast::Sender<(
+        String,
+        Vec<u8>,
+        libp2p::gossipsub::MessageId,
+        libp2p::PeerId,
+    )>,
+    /// Set of foreign NSPs registered by the kinetic-atlas bridge.
+    pub atlas_nsps: std::sync::Arc<std::sync::RwLock<std::collections::HashSet<String>>>,
+}
+
+/// Payload for publishing a direct reveal configuration.
+#[derive(Deserialize, Debug)]
+pub struct PublishRequest {
+    /// The NameRecord object to publish.
+    pub record: kinetic_core::types::NameRecord,
+}
+
+/// Response format for a publish action.
+#[derive(Serialize)]
+pub struct PublishResponse {
+    /// High level status ('success' or 'error').
+    pub status: String,
+    /// Detailed message about the publish result.
+    pub message: String,
+}
+
+/// Constructs the axum `Router` for the API, registering public and authenticated routes.
+pub fn app(state: ApiState) -> Router {
+    use tower_http::cors::CorsLayer;
+
+    let bind_ip = state.bind_ip.clone();
+    let cors = CorsLayer::new()
+        .allow_origin(tower_http::cors::AllowOrigin::predicate(
+            move |origin: &axum::http::HeaderValue, _request_parts| {
+                if let Ok(o) = origin.to_str() {
+                    o.starts_with("http://localhost:")
+                        || o.starts_with("http://127.0.0.1:")
+                        || o.starts_with(&format!("http://{}:", bind_ip))
+                        || o.starts_with("http://[::1]:")
+                        || o == "http://localhost"
+                        || o == "http://127.0.0.1"
+                        || o == format!("http://{}", bind_ip)
+                        || o == "http://[::1]"
+                        || o.starts_with("chrome-extension://")
+                        || o.starts_with("moz-extension://")
+                } else {
+                    false
+                }
+            },
+        ))
+        .allow_methods([
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            axum::http::Method::OPTIONS,
+        ])
+        .allow_headers([
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::AUTHORIZATION,
+        ]);
+
+    // Auth-guarded routes (CLI uses these bare paths with a bearer token)
+    let auth_routes = Router::new()
+        .route("/v1/micro/system/shutdown", post(system::handle_shutdown))
+        .route("/v1/micro/system/restart", post(system::handle_restart))
+        .route(
+            "/v1/micro/system/ca-cert",
+            axum::routing::get(system::handle_get_ca_cert),
+        )
+        .route(
+            "/v1/micro/network/bootstrap",
+            post(config::handle_network_bootstrap),
+        )
+        .route("/v1/micro/auth/session", post(auth::handle_create_session))
+        .route(
+            "/v1/micro/auth/sessions",
+            axum::routing::get(auth::handle_list_sessions),
+        )
+        .route(
+            "/v1/micro/auth/session/{id}",
+            axum::routing::delete(auth::handle_revoke_session),
+        )
+        .route("/v1/micro/nrs/record/commit", post(handle_publish_commit))
+        .route("/v1/micro/nrs/record/publish", post(handle_publish_record))
+        .route("/v1/micro/kid/publish", post(handle_publish_kid))
+        .route(
+            "/v1/micro/kid/manifest/publish",
+            post(handle_publish_manifest),
+        )
+        .route(
+            "/v1/micro/kid/generate",
+            axum::routing::post(handle_generate_kid),
+        )
+        .route(
+            "/v1/micro/kid/{name}/rotate",
+            axum::routing::post(handle_rotate_kid),
+        )
+        .route(
+            "/v1/micro/kid/{name}/revoke",
+            axum::routing::post(handle_revoke_kid),
+        )
+        .route(
+            "/v1/micro/kid/{name}/manifest",
+            axum::routing::post(handle_update_kid_manifest),
+        )
+        .route(
+            "/v1/micro/action/publish",
+            post(action::handle_publish_action),
+        )
+        .route("/v1/micro/config", axum::routing::get(handle_get_config))
+        .route("/v1/micro/config", axum::routing::post(handle_set_config))
+        .route(
+            "/v1/micro/config/dns/flush",
+            axum::routing::post(config::handle_dns_flush),
+        )
+        .route("/v1/macro/tasks", axum::routing::get(handle_macro_tasks))
+        .route(
+            "/v1/macro/status/{task_id}",
+            axum::routing::get(handle_macro_status),
+        )
+        .route(
+            "/v1/micro/nrs/owned",
+            axum::routing::get(handle_owned_names),
+        )
+        .route(
+            "/v1/micro/nrs/zone/{name}",
+            axum::routing::post(handle_post_zone),
+        )
+        .route(
+            "/v1/micro/nrs/zone/local/{name}",
+            axum::routing::post(handle_post_local_zone),
+        )
+        .route(
+            "/v1/micro/nrs/zone/local/{name}",
+            axum::routing::delete(handle_delete_local_zone),
+        )
+        .route(
+            "/v1/micro/nrs/zone/{name}/publish",
+            axum::routing::post(handle_publish_zone),
+        )
+        .route(
+            "/v1/micro/nrs/fat-zone/{name}",
+            axum::routing::post(handle_publish_fat_zone),
+        )
+        .route(
+            "/v1/macro/register",
+            axum::routing::post(handle_macro_register_name),
+        )
+        .route(
+            "/v1/macro/renew",
+            axum::routing::post(handle_macro_renew_name),
+        )
+        .route(
+            "/v1/micro/gossip/publish/{topic}",
+            axum::routing::post(handle_gossip_publish),
+        )
+        .route(
+            "/v1/micro/atlas/sync",
+            axum::routing::post(handle_atlas_sync),
+        )
+        .route(
+            "/v1/micro/nrs/heartbeat/{name}",
+            axum::routing::post(handle_post_heartbeat),
+        )
+        .route(
+            "/v1/micro/nrs/fat-heartbeat/{name}",
+            axum::routing::post(handle_post_fat_heartbeat),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ));
+
+    let public_api_routes: Router<ApiState> = Router::new()
+        .route("/v1/micro/health", axum::routing::get(handle_get_health))
+        .route(
+            "/v1/micro/consensus/difficulty/{name}",
+            axum::routing::get(consensus::handle_get_difficulty),
+        )
+        .route(
+            "/v1/micro/consensus/takeover-difficulty/{name}",
+            axum::routing::get(consensus::handle_takeover_difficulty),
+        )
+        .route(
+            "/v1/micro/consensus/validate",
+            axum::routing::post(consensus::handle_validate_name),
+        )
+        .route(
+            "/v1/micro/network/peer-id",
+            axum::routing::get(handle_get_peer_id),
+        )
+        .route(
+            "/v1/micro/network/status",
+            axum::routing::get(handle_network_status),
+        )
+        .route(
+            "/v1/micro/network/nat",
+            axum::routing::get(config::handle_network_nat),
+        )
+        .route(
+            "/v1/micro/network/peers",
+            axum::routing::get(handle_network_peers),
+        )
+        .route(
+            "/v1/micro/nrs/heartbeats",
+            axum::routing::get(handle_get_heartbeats),
+        )
+        .route(
+            "/v1/micro/network/peers/banned",
+            axum::routing::get(config::handle_network_banned),
+        )
+        .route(
+            "/v1/micro/gossip/topics",
+            axum::routing::get(handle_get_gossip_topics),
+        )
+        .route(
+            "/v1/micro/nrs/names/reserved",
+            axum::routing::get(handle_get_reserved_names),
+        )
+        .route(
+            "/v1/micro/action/status",
+            axum::routing::get(action::handle_get_action_status),
+        )
+        .route(
+            "/v1/micro/action/names",
+            axum::routing::get(action::handle_get_action_names),
+        )
+        .route(
+            "/v1/micro/nrs/zone/{name}",
+            axum::routing::get(handle_get_zone),
+        )
+        .route(
+            "/v1/micro/nrs/zone/local/{name}",
+            axum::routing::get(handle_get_local_zone),
+        )
+        .route(
+            "/v1/micro/nrs/resolve/{name}",
+            axum::routing::get(handle_resolve_name),
+        )
+        .route(
+            "/v1/micro/nrs/resolve/{name}/quorum",
+            axum::routing::post(handle_verify_quorum),
+        )
+        .route(
+            "/v1/micro/kid/resolve/{did}",
+            axum::routing::get(handle_resolve_kid),
+        )
+        .route("/v1/micro/kid/list", axum::routing::get(handle_list_kids))
+        .route("/v1/micro/kid/{name}", axum::routing::get(handle_fetch_kid))
+        .route(
+            "/v1/micro/kid/{name}/manifest",
+            axum::routing::get(handle_get_kid_manifest),
+        )
+        .route(
+            "/v1/micro/time/current",
+            axum::routing::get(handle_get_time),
+        )
+        .route(
+            "/v1/micro/gossip/subscribe/{topic}",
+            axum::routing::get(handle_gossip_subscribe),
+        );
+
+    // Expose all routes exclusively under /api.
+    Router::new()
+        .nest("/api", public_api_routes.merge(auth_routes))
+        .layer(cors)
+        .with_state(state)
+}
+
+fn generate_and_write_token(token_path: &std::path::Path) -> anyhow::Result<String> {
+    let mut token_bytes = [0u8; 32];
+    getrandom::fill(&mut token_bytes).map_err(|e| {
+        let sys_err = kinetic_core::error::SystemError::InvalidOsEnvironment(format!("getrandom failed: {}", e));
+        tracing::error!(
+            error = ?sys_err,
+            severity = "Critical",
+            "FATAL: getrandom failed — cannot generate secure API token. Refusing to start with a predictable token."
+        );
+        anyhow::Error::from(sys_err)
+    })?;
+    let token = hex::encode(token_bytes);
+
+    if let Some(parent) = token_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true).mode(0o600);
+        let mut file = options.open(token_path)?;
+        use std::io::Write;
+        file.write_all(token.as_bytes())?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(token_path, &token)?;
+    }
+
+    Ok(token)
+}
+
+fn rotate_token_on_boot(token_path: &std::path::Path) -> anyhow::Result<String> {
+    tracing::info!(
+        "Rotating API token: {:?}",
+        token_path.file_name().unwrap_or_default()
+    );
+    generate_and_write_token(token_path)
+}
+
+/// Ensures all API tokens are generated and returns them.
+pub fn ensure_api_tokens() -> anyhow::Result<ApiTokens> {
+    let tokens_dir = kinetic_local::config::get_api_tokens_dir();
+
+    Ok(ApiTokens {
+        admin: rotate_token_on_boot(&tokens_dir.join("admin.token"))?,
+        kid: rotate_token_on_boot(&tokens_dir.join("kid.token"))?,
+        nrs: rotate_token_on_boot(&tokens_dir.join("nrs.token"))?,
+        vdf: rotate_token_on_boot(&tokens_dir.join("vdf.token"))?,
+        action: rotate_token_on_boot(&tokens_dir.join("action.token"))?,
+        gossip: rotate_token_on_boot(&tokens_dir.join("gossip.token"))?,
+        metric: rotate_token_on_boot(&tokens_dir.join("metric.token"))?,
+        system: rotate_token_on_boot(&tokens_dir.join("system.token"))?,
+        atlas: rotate_token_on_boot(&tokens_dir.join("atlas.token"))?,
+        heartbeat: rotate_token_on_boot(&tokens_dir.join("heartbeat.token"))?,
+    })
+}
+
+/// Starts the HTTP API server on the specified port.
+///
+/// # Errors
+///
+/// Returns an error if the server fails to bind to the port or if token generation fails.
+#[allow(clippy::too_many_arguments)]
+pub async fn start_server(
+    network: NetworkClient,
+    storage: Arc<dyn StorageEngine>,
+    gossip_tx: tokio::sync::broadcast::Sender<(
+        String,
+        Vec<u8>,
+        libp2p::gossipsub::MessageId,
+        libp2p::PeerId,
+    )>,
+    bind_ip: String,
+    port: u16,
+    atlas_nsps: std::sync::Arc<std::sync::RwLock<std::collections::HashSet<String>>>,
+    host_speed_ips: u64,
+    daemon_keypair: kinetic_primitives::keys::KineticKeypair,
+    dns_cache: Arc<tokio::sync::Mutex<crate::proxy::dns_cache::DnsCache>>,
+) -> anyhow::Result<()> {
+    let tokens = ensure_api_tokens()?;
+
+    let state = ApiState {
+        network,
+        storage,
+        daemon_keypair,
+        host_speed_ips,
+        vdf_tasks: Arc::new(Mutex::new(HashMap::new())),
+        tokens: Arc::new(tokens),
+        dns_cache,
+        vdf_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
+        bind_ip: bind_ip.clone(),
+        gossip_tx,
+        atlas_nsps,
+    };
+
+    // Start background VDF Mempool worker
+
+    let app = app(state);
+
+    let mut listener = None;
+    for _ in 0..10 {
+        if let Ok(l) = tokio::net::TcpListener::bind(format!("{}:{}", bind_ip, port)).await {
+            listener = Some(l);
+            break;
+        } else if let Ok(l) = tokio::net::TcpListener::bind(format!("[::1]:{}", port)).await {
+            tracing::warn!(
+                error = ?kinetic_core::error::SystemError::PortInUse(format!("{}:{}", bind_ip, port)),
+                "Failed to bind API to {}, successfully bound to IPv6 loopback [::1]",
+                bind_ip
+            );
+            listener = Some(l);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    let listener = listener.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Failed to bind API to {} or [::1] on port {}",
+            bind_ip,
+            port
+        )
+    })?;
+
+    let local_addr = listener.local_addr()?;
+    tracing::info!("Starting API server on http://{}", local_addr);
+    tracing::info!(
+        "Local Daemon API successfully bound and listening on http://{}",
+        local_addr
+    );
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(kinetic_local::shutdown::shutdown_signal())
+        .await?;
+    Ok(())
+}
+
+async fn auth_middleware(
+    State(state): State<ApiState>,
+    mut req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Result<axum::response::Response, StatusCode> {
+    let auth_header = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok());
+
+    let header = match auth_header {
+        Some(h) => h,
+        None => {
+            let err = kinetic_core::error::api::RestApiError::InvalidToken;
+            tracing::warn!(
+                error_code = err.code(),
+                "Rejecting API request: Missing Authorization header"
+            );
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+    };
+
+    if !header.starts_with("Bearer ") {
+        let err = kinetic_core::error::api::RestApiError::InvalidToken;
+        tracing::warn!(
+            error_code = err.code(),
+            "Rejecting API request: Authorization header is not a Bearer token"
+        );
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let provided_token = header.trim_start_matches("Bearer ");
+
+    let role = {
+        use subtle::ConstantTimeEq;
+        let provided_bytes = provided_token.as_bytes();
+
+        let mut matched_role = None;
+        let mut check_token = |expected: &str, r: Role| {
+            let expected_bytes = expected.as_bytes();
+            if provided_bytes.len() == expected_bytes.len()
+                && provided_bytes.ct_eq(expected_bytes).unwrap_u8() == 1
+            {
+                matched_role = Some(r);
+            }
+        };
+
+        check_token(
+            &state.tokens.admin,
+            Role {
+                is_admin: true,
+                kid: true,
+                nrs: true,
+                vdf: true,
+                action: true,
+                gossip: true,
+                metric: true,
+                system: true,
+                atlas: true,
+                heartbeat: true,
+            },
+        );
+        check_token(
+            &state.tokens.kid,
+            Role {
+                is_admin: false,
+                kid: true,
+                nrs: false,
+                vdf: false,
+                action: false,
+                gossip: false,
+                metric: false,
+                system: false,
+                atlas: false,
+                heartbeat: false,
+            },
+        );
+        check_token(
+            &state.tokens.nrs,
+            Role {
+                is_admin: false,
+                kid: false,
+                nrs: true,
+                vdf: false,
+                action: false,
+                gossip: false,
+                metric: false,
+                system: false,
+                atlas: false,
+                heartbeat: false,
+            },
+        );
+        check_token(
+            &state.tokens.vdf,
+            Role {
+                is_admin: false,
+                kid: false,
+                nrs: false,
+                vdf: true,
+                action: false,
+                gossip: false,
+                metric: false,
+                system: false,
+                atlas: false,
+                heartbeat: false,
+            },
+        );
+        check_token(
+            &state.tokens.action,
+            Role {
+                is_admin: false,
+                kid: false,
+                nrs: false,
+                vdf: false,
+                action: true,
+                gossip: false,
+                metric: false,
+                system: false,
+                atlas: false,
+                heartbeat: false,
+            },
+        );
+        check_token(
+            &state.tokens.gossip,
+            Role {
+                is_admin: false,
+                kid: false,
+                nrs: false,
+                vdf: false,
+                action: false,
+                gossip: true,
+                metric: false,
+                system: false,
+                atlas: false,
+                heartbeat: false,
+            },
+        );
+        check_token(
+            &state.tokens.metric,
+            Role {
+                is_admin: false,
+                kid: false,
+                nrs: false,
+                vdf: false,
+                action: false,
+                gossip: false,
+                metric: true,
+                system: false,
+                atlas: false,
+                heartbeat: false,
+            },
+        );
+        check_token(
+            &state.tokens.system,
+            Role {
+                is_admin: false,
+                kid: false,
+                nrs: false,
+                vdf: false,
+                action: false,
+                gossip: false,
+                metric: false,
+                system: true,
+                atlas: false,
+                heartbeat: false,
+            },
+        );
+        check_token(
+            &state.tokens.atlas,
+            Role {
+                is_admin: false,
+                kid: false,
+                nrs: false,
+                vdf: false,
+                action: false,
+                gossip: false,
+                metric: false,
+                system: false,
+                atlas: true,
+                heartbeat: false,
+            },
+        );
+        check_token(
+            &state.tokens.heartbeat,
+            Role {
+                is_admin: false,
+                kid: false,
+                nrs: false,
+                vdf: false,
+                action: false,
+                gossip: false,
+                metric: false,
+                system: false,
+                atlas: false,
+                heartbeat: true,
+            },
+        );
+
+        matched_role
+    };
+
+    let mut final_role = role;
+    if final_role.is_none() {
+        let db_key_token = format!("session_token:{}", provided_token);
+        if let Ok(Some(id_bytes)) = state.storage.get(db_key_token.as_bytes())
+            && let Ok(id_str) = String::from_utf8(id_bytes.to_vec())
+        {
+            let db_key_session = format!("session:{}", id_str);
+            if let Ok(Some(bytes)) = state.storage.get(db_key_session.as_bytes())
+                && let Ok(session) = serde_json::from_slice::<crate::api::auth::AppSession>(&bytes)
+            {
+                // Verify expiration using cached Kyn
+                let kyn_provider =
+                    kinetic_network::client::drand::DrandProvider::new(Some(state.storage.clone()));
+                let current_kyn = kyn_provider.load_cached().map(|d| d.kyn).unwrap_or(0);
+
+                if current_kyn > 0 && current_kyn > session.expiry_kyn {
+                    tracing::warn!("Rejecting API request: Session token expired");
+                    return Err(StatusCode::UNAUTHORIZED);
+                }
+
+                let mut session_role = Role {
+                    is_admin: false,
+                    kid: false,
+                    nrs: false,
+                    vdf: false,
+                    action: false,
+                    gossip: false,
+                    metric: false,
+                    system: false,
+                    atlas: false,
+                    heartbeat: false,
+                };
+                for scope in session.scopes {
+                    match scope.to_lowercase().as_str() {
+                        "admin" => session_role.is_admin = true,
+                        "kid" => session_role.kid = true,
+                        "nrs" => session_role.nrs = true,
+                        "vdf" => session_role.vdf = true,
+                        "action" => session_role.action = true,
+                        "gossip" => session_role.gossip = true,
+                        "metric" => session_role.metric = true,
+                        "system" => session_role.system = true,
+                        "atlas" => session_role.atlas = true,
+                        "heartbeat" => session_role.heartbeat = true,
+                        _ => {}
+                    }
+                }
+                final_role = Some(session_role);
+            }
+        }
+    }
+
+    match final_role {
+        Some(r) => {
+            req.extensions_mut().insert(r);
+            Ok(next.run(req).await)
+        }
+        None => {
+            let err = kinetic_core::error::api::RestApiError::InvalidToken;
+            tracing::warn!(
+                error_code = err.code(),
+                "Rejecting API request: Invalid API token"
+            );
+            Err(StatusCode::UNAUTHORIZED)
+        }
+    }
+}
+
+#[cfg(test)]
+mod api_tests;
+
+#[cfg(test)]
+mod proptests {
+
+    use proptest::prelude::*;
+    use subtle::ConstantTimeEq;
+
+    proptest! {
+        #[test]
+        fn test_fuzz_constant_time_eq_lengths(
+            token_a in ".{0,128}",
+            token_b in ".{0,128}"
+        ) {
+            let bytes_a = token_a.as_bytes();
+            let bytes_b = token_b.as_bytes();
+
+            if bytes_a.len() == bytes_b.len() {
+                let eq = bytes_a.ct_eq(bytes_b).unwrap_u8() == 1;
+                prop_assert_eq!(eq, bytes_a == bytes_b);
+            } else {
+                // We don't call ct_eq on different lengths in the middleware, we handle it safely
+                prop_assert_ne!(bytes_a.len(), bytes_b.len());
+            }
+        }
+    }
+}
