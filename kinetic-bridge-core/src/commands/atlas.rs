@@ -1,6 +1,7 @@
-use crate::api::ApiState;
-use axum::{Json, extract::State};
+use crate::JsonResponse;
+use crate::state::get_atlas_nsps;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// Payload sent by the kinetic-atlas bridge containing the list of registered foreign NSPs.
 #[derive(Deserialize, Serialize, Debug)]
@@ -11,16 +12,14 @@ pub struct AtlasSyncPayload {
 
 /// Webhook endpoint for the kinetic-atlas bridge to push updated NSP routing tables.
 /// This updates the in-memory HashSet used by the DNS resolver.
-pub async fn handle_atlas_sync(
-    axum::extract::Extension(role): axum::extract::Extension<crate::api::Role>,
-    State(state): State<ApiState>,
-    Json(payload): Json<AtlasSyncPayload>,
-) -> Result<Json<serde_json::Value>, crate::api::error::AppError> {
-    if !role.can_atlas() {
-        return Err(crate::api::error::AppError::from(
-            kinetic_core::error::RestApiError::InsufficientPrivileges,
-        ));
-    }
+pub fn handle_atlas_sync(params: Option<Value>) -> JsonResponse {
+    let payload: AtlasSyncPayload = match params {
+        Some(p) => match serde_json::from_value(p) {
+            Ok(m) => m,
+            Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Invalid params: {}", e)) }
+        },
+        None => return JsonResponse { status: "error".to_string(), data: None, error: Some("Missing params".to_string()) }
+    };
 
     let mut clean_nsps = std::collections::HashSet::new();
 
@@ -36,7 +35,7 @@ pub async fn handle_atlas_sync(
         }
     }
 
-    match state.atlas_nsps.write() {
+    match get_atlas_nsps().write() {
         Ok(mut lock) => {
             let count = clean_nsps.len();
             tracing::info!(
@@ -47,29 +46,22 @@ pub async fn handle_atlas_sync(
 
             *lock = clean_nsps;
 
-            Ok(Json(serde_json::json!({
-                "status": "success",
-                "synced_count": count
-            })))
+            JsonResponse {
+                status: "success".to_string(),
+                data: Some(serde_json::json!({
+                    "synced_count": count
+                })),
+                error: None,
+            }
         }
         Err(_) => {
             let sys_err = kinetic_core::error::SystemError::MutexPoisoned("atlas_nsps".into());
             tracing::error!(error = ?sys_err, "Failed to acquire write lock on atlas_nsps");
-            Err(crate::api::error::AppError(kinetic_rpc::ApiError {
-                error_type: format!(
-                    "{}/errors/{}",
-                    kinetic_core::constants::DOCS_URL,
-                    sys_err.code()
-                ),
-                title: "Internal Server Error".to_string(),
-                status: 500,
-                detail: sys_err.user_message(),
-                instance: None,
-                code: sys_err.code().to_string(),
-                retryable: sys_err.is_retryable(),
-                details: serde_json::Value::Null,
-                request_id: "".to_string(),
-            }))
+            JsonResponse {
+                status: "error".to_string(),
+                data: None,
+                error: Some(format!("Internal Server Error: {}", sys_err.user_message())),
+            }
         }
     }
 }
