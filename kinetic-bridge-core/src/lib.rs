@@ -87,7 +87,7 @@ pub fn execute_command(json_input: &str) -> String {
         "gossip_publish" => commands::gossip::handle_gossip_publish(req.params),
         "get_gossip_topics" => commands::gossip::handle_get_gossip_topics(req.params),
         
-        "get_heartbeat" => commands::heartbeat::handle_get_heartbeat(req.params),
+        "get_heartbeat" => commands::heartbeat::handle_get_heartbeat_status(req.params),
         "post_heartbeat" => commands::heartbeat::handle_post_heartbeat(req.params),
         "post_fat_heartbeat" => commands::heartbeat::handle_post_fat_heartbeat(req.params),
         

@@ -1,7 +1,7 @@
 //! HTTP REST API endpoints for daemon configuration, node status, owned names, and action state.
 
 use crate::JsonResponse;
-use crate::state::{get_network, get_storage, RUNTIME};
+use crate::state::{get_network, get_storage, not_initialized, RUNTIME};
 use serde_json::Value;
 use kinetic_core::traits::StorageEngine;
 
@@ -32,7 +32,8 @@ pub fn handle_get_config(_params: Option<Value>) -> JsonResponse {
 /// Handles requests to retrieve a list of names owned by this node.
 pub fn handle_owned_names(_params: Option<Value>) -> JsonResponse {
     let owned_key = kinetic_core::constants::DB_PREFIX_OWNED_NAMES;
-    match get_storage().get(owned_key) {
+    let storage = match get_storage() { Some(s) => s, None => return not_initialized() };
+    match storage.get(owned_key) {
         Ok(Some(bytes)) => match serde_json::from_slice::<Vec<String>>(&bytes) {
             Ok(v) => JsonResponse {
                 status: "ok".to_string(),
@@ -60,8 +61,9 @@ pub fn handle_owned_names(_params: Option<Value>) -> JsonResponse {
 
 /// Handles requests to retrieve the current network status (peer count, DHT size, uptime).
 pub fn handle_network_status(_params: Option<Value>) -> JsonResponse {
-    RUNTIME.get().unwrap().block_on(async {
-        match get_network().get_network_status().await {
+    let network = match get_network() { Some(n) => n, None => return not_initialized() };
+    RUNTIME.get().unwrap().block_on(async move {
+        match network.get_network_status().await {
             Ok(status) => JsonResponse { status: "ok".to_string(), data: Some(status), error: None },
             Err(e) => JsonResponse { status: "error".to_string(), data: None, error: Some(e.to_string()) },
         }
@@ -70,8 +72,9 @@ pub fn handle_network_status(_params: Option<Value>) -> JsonResponse {
 
 /// Handles requests to manually trigger a Kademlia network bootstrap.
 pub fn handle_network_bootstrap(_params: Option<Value>) -> JsonResponse {
-    RUNTIME.get().unwrap().block_on(async {
-        match get_network().rebootstrap_network().await {
+    let network = match get_network() { Some(n) => n, None => return not_initialized() };
+    RUNTIME.get().unwrap().block_on(async move {
+        match network.rebootstrap_network().await {
             Ok(_) => JsonResponse {
                 status: "success".to_string(),
                 data: Some(serde_json::json!({ "message": "Network bootstrap initiated." })),
@@ -84,8 +87,9 @@ pub fn handle_network_bootstrap(_params: Option<Value>) -> JsonResponse {
 
 /// Handles requests to retrieve the current Libp2p AutoNAT status (e.g. Public, Private, Unknown).
 pub fn handle_network_nat(_params: Option<Value>) -> JsonResponse {
-    RUNTIME.get().unwrap().block_on(async {
-        match get_network().get_network_status().await {
+    let network = match get_network() { Some(n) => n, None => return not_initialized() };
+    RUNTIME.get().unwrap().block_on(async move {
+        match network.get_network_status().await {
             Ok(mut status) => {
                 let nat_status = status
                     .as_object_mut()
@@ -100,8 +104,9 @@ pub fn handle_network_nat(_params: Option<Value>) -> JsonResponse {
 
 /// Handles requests to retrieve the list of currently banned spam peers and their expiration kyn.
 pub fn handle_network_banned(_params: Option<Value>) -> JsonResponse {
-    RUNTIME.get().unwrap().block_on(async {
-        match get_network().get_banned_peers().await {
+    let network = match get_network() { Some(n) => n, None => return not_initialized() };
+    RUNTIME.get().unwrap().block_on(async move {
+        match network.get_banned_peers().await {
             Ok(peers) => {
                 let json_peers: Vec<serde_json::Value> = peers
                     .into_iter()
@@ -116,8 +121,9 @@ pub fn handle_network_banned(_params: Option<Value>) -> JsonResponse {
 
 /// Handles requests to retrieve the list of connected Peer IDs.
 pub fn handle_network_peers(_params: Option<Value>) -> JsonResponse {
-    RUNTIME.get().unwrap().block_on(async {
-        match get_network().get_connected_peers().await {
+    let network = match get_network() { Some(n) => n, None => return not_initialized() };
+    RUNTIME.get().unwrap().block_on(async move {
+        match network.get_connected_peers().await {
             Ok(peers) => JsonResponse { status: "ok".to_string(), data: Some(serde_json::to_value(peers).unwrap()), error: None },
             Err(e) => JsonResponse { status: "error".to_string(), data: None, error: Some(e.to_string()) },
         }
@@ -165,9 +171,11 @@ pub fn handle_set_config(params: Option<Value>) -> JsonResponse {
 
 /// Handles requests to check the daemon health.
 pub fn handle_get_health(_params: Option<Value>) -> JsonResponse {
-    RUNTIME.get().unwrap().block_on(async {
-        let network_ok = get_network().get_network_status().await.is_ok();
-        let storage_ok = get_storage().get(kinetic_core::constants::DB_PREFIX_LAST_DRAND).is_ok();
+    let network = match get_network() { Some(n) => n, None => return not_initialized() };
+    let storage = match get_storage() { Some(s) => s, None => return not_initialized() };
+    RUNTIME.get().unwrap().block_on(async move {
+        let network_ok = network.get_network_status().await.is_ok();
+        let storage_ok = storage.get(kinetic_core::constants::DB_PREFIX_LAST_DRAND).is_ok();
 
         if network_ok && storage_ok {
             JsonResponse {
@@ -195,8 +203,9 @@ pub fn handle_get_health(_params: Option<Value>) -> JsonResponse {
 
 /// Handles requests to retrieve the local peer ID.
 pub fn handle_get_peer_id(_params: Option<Value>) -> JsonResponse {
-    RUNTIME.get().unwrap().block_on(async {
-        match get_network().get_network_status().await {
+    let network = match get_network() { Some(n) => n, None => return not_initialized() };
+    RUNTIME.get().unwrap().block_on(async move {
+        match network.get_network_status().await {
             Ok(status) => {
                 if let Some(peer_id) = status.get("peer_id").and_then(|p| p.as_str()) {
                     JsonResponse { status: "ok".to_string(), data: Some(serde_json::json!({ "peer_id": peer_id })), error: None }

@@ -21,27 +21,28 @@
 
 use crate::JsonResponse;
 use tracing;
-use crate::state::{get_network, get_storage, RUNTIME};
-use serde_json::Value;
+use crate::state::{get_network, get_storage, not_initialized, RUNTIME};
 use kinetic_core::traits::KynProvider;
 use kinetic_core::traits::StorageEngine;
-use kinetic_core::types::RevealExt;
+use kinetic_core::types::vdf::RevealExt;
 use kinetic_core::types::clock::KynNetworkExt;
 use kinetic_verify::signatures::VerifySignature;
+use kinetic_core::types::Kyn;
+use serde_json::Value;
 
-/// Resolves the canonical current network time epoch (KYN) with high availability.
-async fn get_safe_current_kyn() -> kinetic_core::types::Kyn {
-    if let Ok(kyn) = get_network().get_current_kyn().await {
+/// Safely fetches the current Kyn using the network client, with verified local database cache fallback.
+async fn get_safe_current_kyn(network: &kinetic_network::client::NetworkClient, storage: &std::sync::Arc<kinetic_storage::KineticStorage>) -> Kyn {
+    if let Ok(kyn) = network.get_current_kyn().await {
         if kyn > 0 {
-            return kinetic_core::types::Kyn(kyn);
+            return Kyn(kyn);
         }
     }
 
     let kyn_provider =
-        kinetic_network::client::drand::DrandProvider::new(Some(get_storage().clone()));
+        kinetic_network::client::drand::DrandProvider::new(Some(storage.clone()));
     match kyn_provider.load_cached() {
-        Ok(kyn) if kyn.kyn > 0 => kinetic_core::types::Kyn(kyn.kyn),
-        _ => kinetic_core::types::Kyn::now_local(),
+        Ok(kyn) if kyn.kyn > 0 => Kyn(kyn.kyn),
+        _ => Kyn::now_local(),
     }
 }
 
@@ -83,7 +84,9 @@ pub fn handle_publish_record(params: Option<Value>) -> JsonResponse {
         }
 
         // Enforce Time Oracle staleness
-        let current_kyn = get_safe_current_kyn().await.0;
+        let network = match crate::state::get_network() { Some(n) => n, None => return not_initialized() };
+        let storage = match crate::state::get_storage() { Some(s) => s, None => return not_initialized() };
+        let current_kyn = get_safe_current_kyn(&network, &storage).await.0;
 
         if is_standard && current_kyn > 0 {
             if kyn > current_kyn {
@@ -101,13 +104,13 @@ pub fn handle_publish_record(params: Option<Value>) -> JsonResponse {
         };
         let payload_clone = payload_bytes.clone();
 
-        if let Err(e) = get_network().publish_redundant_payload(&fqdn, payload_bytes).await {
+        if let Err(e) = match get_network() { Some(n) => n, None => return not_initialized() }.publish_redundant_payload(&fqdn, payload_bytes).await {
             return JsonResponse { status: "error".to_string(), data: None, error: Some(e.to_string()) };
         }
 
         tracing::info!("Successfully queued payload for {} to the DHT network", fqdn);
 
-        let storage = get_storage();
+        let storage = match get_storage() { Some(s) => s, None => return not_initialized() };
         let fqdn_persist = fqdn.clone();
         let name_record_clone = name_record.clone();
 
@@ -143,7 +146,7 @@ pub fn handle_publish_record(params: Option<Value>) -> JsonResponse {
         }
 
         // Spawn a background task to verify quorum threshold
-        let network = get_network();
+        let network = match get_network() { Some(n) => n, None => return not_initialized() };
         let fqdn_clone = fqdn.clone();
 
         tokio::spawn(async move {
@@ -207,14 +210,14 @@ pub fn handle_publish_commit(params: Option<Value>) -> JsonResponse {
             Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Serialization failed: {}", e)) },
         };
 
-        if let Err(e) = get_network().publish_redundant_payload(&fqdn, payload_bytes.clone()).await {
+        if let Err(e) = match get_network() { Some(n) => n, None => return not_initialized() }.publish_redundant_payload(&fqdn, payload_bytes.clone()).await {
             return JsonResponse { status: "error".to_string(), data: None, error: Some(e.to_string()) };
         }
 
         tracing::info!("Successfully queued Commitment for {} to the DHT network", fqdn);
 
         // Spawn a background task to verify quorum threshold
-        let network = get_network();
+        let network = match get_network() { Some(n) => n, None => return not_initialized() };
         let fqdn_clone = fqdn.clone();
 
         tokio::spawn(async move {
@@ -300,7 +303,7 @@ pub fn handle_resolve_name(params: Option<Value>) -> JsonResponse {
             return JsonResponse { status: "error".to_string(), data: None, error: Some("Not Found".to_string()) };
         }
 
-        let record = match get_network().resolve_redundant_payload(&fqdn).await {
+        let record = match match get_network() { Some(n) => n, None => return not_initialized() }.resolve_redundant_payload(&fqdn).await {
             Ok(payload) => {
                 let record = match serde_json::from_slice::<kinetic_core::types::NameRecord>(&payload) {
                     Ok(r) => r,
@@ -323,7 +326,7 @@ pub fn handle_resolve_name(params: Option<Value>) -> JsonResponse {
                 // Fallback to local storage if DHT lookup fails or returns nothing
                 // This rescues users who lost their local record cache (.record.json) and the DHT dropped their record
                 let reveal_key = format!("{}{}", kinetic_core::constants::DB_PREFIX_REVEAL, fqdn);
-                let storage = get_storage();
+                let storage = match get_storage() { Some(s) => s, None => return not_initialized() };
 
                 let record_bytes = match tokio::task::spawn_blocking(move || storage.get(reveal_key.as_bytes())).await {
                     Ok(Ok(Some(bytes))) => bytes,
@@ -386,7 +389,7 @@ pub fn handle_verify_quorum(params: Option<Value>) -> JsonResponse {
 
         let payload = serde_json::to_vec(&record).unwrap();
 
-        match get_network().verify_quorum(&fqdn, payload).await {
+        match match get_network() { Some(n) => n, None => return not_initialized() }.verify_quorum(&fqdn, payload).await {
             Ok(count) => JsonResponse {
                 status: "success".to_string(),
                 data: Some(serde_json::json!({
@@ -555,7 +558,7 @@ pub fn handle_publish_zone(params: Option<Value>) -> JsonResponse {
 
         // 2. Load the persisted Reveal (stored at registration time)
         let reveal_key = format!("{}{}", kinetic_core::constants::DB_PREFIX_REVEAL, fqdn);
-        let storage = get_storage();
+        let storage = match get_storage() { Some(s) => s, None => return not_initialized() };
         let r_key = reveal_key.clone();
         let reveal_bytes = match tokio::task::spawn_blocking(move || storage.get(r_key.as_bytes())).await {
             Ok(Ok(Some(bytes))) => bytes,
@@ -568,7 +571,7 @@ pub fn handle_publish_zone(params: Option<Value>) -> JsonResponse {
         };
 
         // 3. Load the daemon keypair and re-sign with the updated payload
-        let keypair = crate::state::get_keypair();
+        let keypair = match crate::state::get_keypair() { Some(k) => k, None => return not_initialized() };
         let pubkey_bytes = keypair.pubkey_bytes();
         if record.pubkey() != pubkey_bytes.as_slice() {
             return JsonResponse { status: "error".to_string(), data: None, error: Some("The daemon key does not match the owner key for this name registration.".to_string()) };
@@ -611,7 +614,7 @@ pub fn handle_publish_zone(params: Option<Value>) -> JsonResponse {
 
         // 4. Update the stored Reveal so future zone publishes reflect the latest payload
         if let Ok(updated_bytes) = serde_json::to_vec(&record) {
-            let storage = get_storage();
+            let storage = match get_storage() { Some(s) => s, None => return not_initialized() };
             let reveal_key_for_put = reveal_key.clone();
             tokio::task::spawn_blocking(move || {
                 let _ = storage.put(reveal_key_for_put.as_bytes(), &updated_bytes);
@@ -624,7 +627,7 @@ pub fn handle_publish_zone(params: Option<Value>) -> JsonResponse {
             Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Serialization error: {}", e)) },
         };
 
-        if let Err(e) = get_network().publish_redundant_payload(&fqdn, dht_payload).await {
+        if let Err(e) = match get_network() { Some(n) => n, None => return not_initialized() }.publish_redundant_payload(&fqdn, dht_payload).await {
             return JsonResponse { status: "error".to_string(), data: None, error: Some(e.to_string()) };
         }
 
@@ -833,7 +836,7 @@ pub fn handle_publish_fat_zone(params: Option<Value>) -> JsonResponse {
 
         // 3. Load the persisted Reveal (stored at registration time) to retain the valid VDF proof
         let reveal_key = format!("{}{}", kinetic_core::constants::DB_PREFIX_REVEAL, fqdn);
-        let storage = get_storage();
+        let storage = match get_storage() { Some(s) => s, None => return not_initialized() };
         let r_key = reveal_key.clone();
         let reveal_bytes = match tokio::task::spawn_blocking(move || storage.get(r_key.as_bytes())).await {
             Ok(Ok(Some(bytes))) => bytes,
@@ -888,9 +891,9 @@ pub fn handle_publish_fat_zone(params: Option<Value>) -> JsonResponse {
 
         // 5. Save the updated reveal locally so the daemon serves the newest zone on fallback
         let final_bytes = serde_json::to_vec(&record).unwrap();
-        let network = get_network();
+        let network = match get_network() { Some(n) => n, None => return not_initialized() };
 
-        let s2 = get_storage();
+        let s2 = match get_storage() { Some(s) => s, None => return not_initialized() };
         let fqdn2 = fqdn.clone();
         let fb = final_bytes.clone();
         tokio::task::spawn_blocking(move || {

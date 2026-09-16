@@ -1,7 +1,7 @@
 //! API endpoints for manually broadcasting heartbeats and checking real-time DHT heartbeat status.
 
 use crate::JsonResponse;
-use crate::state::{get_network, get_storage, KEYPAIR, RUNTIME};
+use crate::state::{get_network, get_storage, not_initialized, KEYPAIR, RUNTIME};
 use serde_json::Value;
 use kinetic_core::constants;
 use kinetic_core::types::{Heartbeat, KynNetworkExt};
@@ -36,15 +36,15 @@ const ACTIVE_HEARTBEAT_MAX_KYNS: u64 = 200;
 const STALE_HEARTBEAT_MAX_KYNS: u64 = 28_800;
 
 /// Safely fetches the current Kyn using the network client, with verified local database cache fallback.
-async fn get_safe_current_kyn() -> u64 {
-    if let Ok(kyn) = get_network().get_current_kyn().await {
+async fn get_safe_current_kyn(network: &kinetic_network::client::NetworkClient, storage: &std::sync::Arc<kinetic_storage::KineticStorage>) -> u64 {
+    if let Ok(kyn) = network.get_current_kyn().await {
         if kyn > 0 {
             return kyn;
         }
     }
 
     let kyn_provider =
-        kinetic_network::client::drand::DrandProvider::new(Some(get_storage()));
+        kinetic_network::client::drand::DrandProvider::new(Some(storage.clone()));
     use kinetic_core::traits::KynProvider;
     match kyn_provider.load_cached() {
         Ok(kyn) if kyn.kyn > 0 => kyn.kyn,
@@ -53,10 +53,13 @@ async fn get_safe_current_kyn() -> u64 {
 }
 
 /// Fetches the real-time DHT heartbeat status of all locally owned names.
-pub fn handle_get_heartbeat(_params: Option<Value>) -> JsonResponse {
-    RUNTIME.get().unwrap().block_on(async {
+pub fn handle_get_heartbeat_status(_params: Option<Value>) -> JsonResponse {
+    let network = match get_network() { Some(n) => n, None => return not_initialized() };
+    let storage = match get_storage() { Some(s) => s, None => return not_initialized() };
+
+    RUNTIME.get().unwrap().block_on(async move {
         let owned_key = constants::DB_PREFIX_OWNED_NAMES;
-        let owned_names: Vec<String> = match get_storage().get(owned_key) {
+        let owned_names: Vec<String> = match storage.get(owned_key) {
             Ok(Some(bytes)) => match serde_json::from_slice(&bytes) {
                 Ok(v) => v,
                 Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("DeserializationFailed: {}", e)) },
@@ -65,13 +68,14 @@ pub fn handle_get_heartbeat(_params: Option<Value>) -> JsonResponse {
             Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(e.to_string()) },
         };
 
-        let current_kyn = get_safe_current_kyn().await;
+        let current_kyn = get_safe_current_kyn(&network, &storage).await;
 
         let mut handles = Vec::new();
         for name in owned_names {
             let name_clone = name.clone();
+            let network_clone = network.clone();
             handles.push(tokio::spawn(async move {
-                let res = get_network().resolve_heartbeat(&name_clone).await;
+                let res = network_clone.resolve_heartbeat(&name_clone).await;
                 (name_clone, res)
             }));
         }
@@ -140,8 +144,12 @@ pub fn handle_post_heartbeat(params: Option<Value>) -> JsonResponse {
         return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Invalid name: {}", e)) };
     }
 
-    RUNTIME.get().unwrap().block_on(async {
-        let current_kyn = get_safe_current_kyn().await;
+    let network = match get_network() { Some(n) => n, None => return not_initialized() };
+    let storage = match get_storage() { Some(s) => s, None => return not_initialized() };
+    let keypair = match crate::state::get_keypair() { Some(k) => k, None => return not_initialized() };
+
+    RUNTIME.get().unwrap().block_on(async move {
+        let current_kyn = get_safe_current_kyn(&network, &storage).await;
 
         let mut heartbeat = Heartbeat {
             name: normalized.clone(),
@@ -151,7 +159,6 @@ pub fn handle_post_heartbeat(params: Option<Value>) -> JsonResponse {
         };
 
         let signable_bytes = heartbeat.signable_bytes(constants::NETWORK_SALT);
-        let keypair = KEYPAIR.get().expect("Daemon Keypair not loaded in bridge").clone();
 
         let sig_bytes = match tokio::task::spawn_blocking(move || keypair.sign(&signable_bytes)).await {
             Ok(s) => s,
@@ -164,7 +171,7 @@ pub fn handle_post_heartbeat(params: Option<Value>) -> JsonResponse {
             Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Failed to serialize heartbeat: {}", e)) },
         };
 
-        match get_network().publish_heartbeat(&normalized, payload).await {
+        match network.publish_heartbeat(&normalized, payload).await {
             Ok(_) => JsonResponse {
                 status: "success".to_string(),
                 data: Some(serde_json::json!({
@@ -236,8 +243,11 @@ pub fn handle_post_fat_heartbeat(params: Option<Value>) -> JsonResponse {
         Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Invalid ML-DSA keypair: {}", e)) },
     };
 
-    RUNTIME.get().unwrap().block_on(async {
-        let current_kyn = get_safe_current_kyn().await;
+    let network = match get_network() { Some(n) => n, None => return not_initialized() };
+    let storage = match get_storage() { Some(s) => s, None => return not_initialized() };
+
+    RUNTIME.get().unwrap().block_on(async move {
+        let current_kyn = get_safe_current_kyn(&network, &storage).await;
 
         let mut heartbeat = Heartbeat {
             name: normalized.clone(),
@@ -259,7 +269,7 @@ pub fn handle_post_fat_heartbeat(params: Option<Value>) -> JsonResponse {
             Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Failed to serialize fat heartbeat: {}", e)) },
         };
 
-        match get_network().publish_heartbeat(&normalized, payload).await {
+        match network.publish_heartbeat(&normalized, payload).await {
             Ok(_) => JsonResponse {
                 status: "success".to_string(),
                 data: Some(serde_json::json!({

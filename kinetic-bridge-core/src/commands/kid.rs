@@ -7,24 +7,25 @@
 //! cryptographically signing `AuthorizedKid` payloads to delegate trust on the DHT.
 
 use crate::JsonResponse;
-use crate::state::{get_network, get_storage, RUNTIME};
+use crate::state::{get_network, get_storage, not_initialized, RUNTIME};
 use serde_json::Value;
-use kinetic_core::traits::{KynProvider, StorageEngine};
+use kinetic_core::traits::KynProvider;
+use kinetic_core::traits::StorageEngine;
 use kinetic_core::types::Kyn;
 use kinetic_core::types::clock::KynNetworkExt;
 use serde::Deserialize;
 use tracing;
 
 /// Safely fetches the current Kyn using the network client, with verified local database cache fallback.
-async fn get_safe_current_kyn() -> Kyn {
-    if let Ok(kyn) = get_network().get_current_kyn().await {
+async fn get_safe_current_kyn(network: &kinetic_network::client::NetworkClient, storage: &std::sync::Arc<kinetic_storage::KineticStorage>) -> Kyn {
+    if let Ok(kyn) = network.get_current_kyn().await {
         if kyn > 0 {
             return Kyn(kyn);
         }
     }
 
     let kyn_provider =
-        kinetic_network::client::drand::DrandProvider::new(Some(get_storage()));
+        kinetic_network::client::drand::DrandProvider::new(Some(storage.clone()));
     match kyn_provider.load_cached() {
         Ok(kyn) if kyn.kyn > 0 => Kyn(kyn.kyn),
         _ => Kyn::now_local(),
@@ -100,8 +101,10 @@ pub fn handle_generate_kid(params: Option<Value>) -> JsonResponse {
         base_fqdn
     };
 
-    RUNTIME.get().unwrap().block_on(async {
-        let current_kyn = get_safe_current_kyn().await;
+    RUNTIME.get().unwrap().block_on(async move {
+        let network = match crate::state::get_network() { Some(n) => n, None => return not_initialized() };
+        let storage = match crate::state::get_storage() { Some(s) => s, None => return not_initialized() };
+        let current_kyn = get_safe_current_kyn(&network, &storage).await;
 
         let identity_path = kinetic_local::config::get_base_dir().join("identity.key");
         let res = match kinetic_local::kid_manager::get_or_create_kid_for_name(
@@ -118,7 +121,7 @@ pub fn handle_generate_kid(params: Option<Value>) -> JsonResponse {
         // Publish AuthorizedKid wrapper to DHT
         match serde_json::to_vec(&res.auth_kid) {
             Ok(payload_bytes) => {
-                if let Err(e) = get_network()
+                if let Err(e) = match get_network() { Some(n) => n, None => return not_initialized() }
                     .publish_redundant_payload(&res.did, payload_bytes)
                     .await
                 {
@@ -161,7 +164,7 @@ pub fn handle_rotate_kid(params: Option<Value>) -> JsonResponse {
         // Publish rotated document to DHT
         match serde_json::to_vec(&rotated.auth_kid) {
             Ok(payload_bytes) => {
-                if let Err(e) = get_network()
+                if let Err(e) = match get_network() { Some(n) => n, None => return not_initialized() }
                     .publish_redundant_payload(&rotated.did, payload_bytes)
                     .await
                 {
@@ -208,7 +211,7 @@ pub fn handle_revoke_kid(params: Option<Value>) -> JsonResponse {
         // Publish revoked document to DHT
         match serde_json::to_vec(&auth_kid) {
             Ok(payload_bytes) => {
-                if let Err(e) = get_network()
+                if let Err(e) = match get_network() { Some(n) => n, None => return not_initialized() }
                     .publish_redundant_payload(revoked_doc.kid.as_str(), payload_bytes)
                     .await
                 {
@@ -281,8 +284,10 @@ pub fn handle_update_kid_manifest(params: Option<Value>) -> JsonResponse {
         None => return JsonResponse { status: "error".to_string(), data: None, error: Some("Missing 'payload'".to_string()) },
     };
 
-    RUNTIME.get().unwrap().block_on(async {
-        let current_kyn = get_safe_current_kyn().await;
+    RUNTIME.get().unwrap().block_on(async move {
+        let network = match crate::state::get_network() { Some(n) => n, None => return not_initialized() };
+        let storage = match crate::state::get_storage() { Some(s) => s, None => return not_initialized() };
+        let current_kyn = get_safe_current_kyn(&network, &storage).await;
 
         let identity_path = kinetic_local::config::get_base_dir().join("identity.key");
         let (manifest, auth_manifest) = match kinetic_local::kid_manager::save_and_sign_local_manifest(
@@ -302,7 +307,7 @@ pub fn handle_update_kid_manifest(params: Option<Value>) -> JsonResponse {
 
         match serde_json::to_vec(&auth_manifest) {
             Ok(payload_bytes) => {
-                if let Err(e) = get_network()
+                if let Err(e) = match get_network() { Some(n) => n, None => return not_initialized() }
                     .publish_redundant_payload(&manifest_key, payload_bytes)
                     .await
                 {
@@ -341,7 +346,7 @@ pub fn handle_resolve_kid(params: Option<Value>) -> JsonResponse {
         tracing::info!("Resolving KID via API: {}", did);
 
         // Resolve KID - Notice how this entire massive match block is now just a single `?`
-        let kid_payload = match get_network().resolve_redundant_payload(&did).await {
+        let kid_payload = match match get_network() { Some(n) => n, None => return not_initialized() }.resolve_redundant_payload(&did).await {
             Ok(p) => p,
             Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(e.to_string()) },
         };
@@ -367,7 +372,7 @@ pub fn handle_resolve_kid(params: Option<Value>) -> JsonResponse {
             "kid_document": kid_doc,
         });
 
-        if let Ok(man_payload) = get_network().resolve_redundant_payload(&manifest_key).await {
+        if let Ok(man_payload) = match get_network() { Some(n) => n, None => return not_initialized() }.resolve_redundant_payload(&manifest_key).await {
             let manifest_opt =
                 match serde_json::from_slice::<kinetic_core::types::AuthorizedManifest>(&man_payload) {
                     Ok(auth) => Some(auth.manifest),
@@ -417,7 +422,7 @@ pub fn handle_publish_kid(params: Option<Value>) -> JsonResponse {
             kinetic_core::constants::DB_PREFIX_REVEAL,
             auth_kid.name
         );
-        let is_authorized = match get_storage().get(reveal_key.as_bytes()) {
+        let is_authorized = match match get_storage() { Some(s) => s, None => return not_initialized() }.get(reveal_key.as_bytes()) {
             Ok(Some(bytes)) => {
                 if let Ok(record) = serde_json::from_slice::<kinetic_core::types::NameRecord>(&bytes) {
                     kinetic_primitives::verify_mldsa(
@@ -448,7 +453,7 @@ pub fn handle_publish_kid(params: Option<Value>) -> JsonResponse {
         };
         let fqdn = auth_kid.kid_doc.kid.as_str().to_string(); // Use DID as the DHT key
 
-        if let Err(e) = get_network().publish_redundant_payload(&fqdn, payload_bytes).await {
+        if let Err(e) = match get_network() { Some(n) => n, None => return not_initialized() }.publish_redundant_payload(&fqdn, payload_bytes).await {
             return JsonResponse { status: "error".to_string(), data: None, error: Some(e.to_string()) };
         }
 
@@ -492,7 +497,7 @@ pub fn handle_publish_manifest(params: Option<Value>) -> JsonResponse {
             kinetic_core::constants::DB_PREFIX_REVEAL,
             auth_manifest.name
         );
-        let is_authorized = match get_storage().get(reveal_key.as_bytes()) {
+        let is_authorized = match match get_storage() { Some(s) => s, None => return not_initialized() }.get(reveal_key.as_bytes()) {
             Ok(Some(bytes)) => {
                 if let Ok(record) = serde_json::from_slice::<kinetic_core::types::NameRecord>(&bytes) {
                     kinetic_primitives::verify_mldsa(
@@ -520,7 +525,7 @@ pub fn handle_publish_manifest(params: Option<Value>) -> JsonResponse {
 
         // 1. Resolve the KID Document from DHT to verify against
         // (Note: The DHT payload for a KID will now be an AuthorizedKid wrapper!)
-        let kid_payload = match get_network().resolve_redundant_payload(did_str).await {
+        let kid_payload = match match get_network() { Some(n) => n, None => return not_initialized() }.resolve_redundant_payload(did_str).await {
             Ok(p) => p,
             Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Failed to resolve KID payload: {}", e)) },
         };
@@ -538,7 +543,9 @@ pub fn handle_publish_manifest(params: Option<Value>) -> JsonResponse {
             };
 
         // 2. Verify the manifest against the registered KID using network time
-        let current_network_time = get_safe_current_kyn().await.to_network_utime().0;
+        let network = match crate::state::get_network() { Some(n) => n, None => return not_initialized() };
+        let storage = match crate::state::get_storage() { Some(s) => s, None => return not_initialized() };
+        let current_network_time = get_safe_current_kyn(&network, &storage).await.to_network_utime().0;
         if let Err(e) = auth_manifest
             .manifest
             .verify_at_time(&kid_doc, current_network_time)
@@ -556,7 +563,7 @@ pub fn handle_publish_manifest(params: Option<Value>) -> JsonResponse {
             Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Serialization failed: {}", e)) },
         };
 
-        if let Err(e) = get_network().publish_redundant_payload(&manifest_key, payload_bytes).await {
+        if let Err(e) = match get_network() { Some(n) => n, None => return not_initialized() }.publish_redundant_payload(&manifest_key, payload_bytes).await {
             return JsonResponse { status: "error".to_string(), data: None, error: Some(e.to_string()) };
         }
 

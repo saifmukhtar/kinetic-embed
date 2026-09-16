@@ -1,7 +1,7 @@
 //! HTTP REST API handlers for querying the Action transparency layer.
 
 use crate::JsonResponse;
-use crate::state::{get_network, get_storage, RUNTIME};
+use crate::state::{get_network, get_storage, not_initialized, RUNTIME};
 use kinetic_core::types::clock::KynNetworkExt;
 use kinetic_local::action::GLOBAL_ACTION_STATE;
 use serde::Serialize;
@@ -69,7 +69,7 @@ pub fn handle_get_action_status(_params: Option<Value>) -> JsonResponse {
     // Fetch verified Kyn from the node's constantly updating local cache
     let current_kyn = {
         let kyn_provider =
-            kinetic_network::client::drand::DrandProvider::new(Some(get_storage()));
+            kinetic_network::client::drand::DrandProvider::new(Some(match get_storage() { Some(s) => s, None => return not_initialized() }));
         use kinetic_core::traits::KynProvider;
         match kyn_provider.load_cached() {
             Ok(kyn) => kyn.kyn,
@@ -176,7 +176,7 @@ pub fn handle_publish_action(params: Option<Value>) -> JsonResponse {
     RUNTIME.get().unwrap().block_on(async {
         let _current_kyn = {
             let kyn_provider =
-                kinetic_network::client::drand::DrandProvider::new(Some(get_storage()));
+                kinetic_network::client::drand::DrandProvider::new(Some(match get_storage() { Some(s) => s, None => return not_initialized() }));
             use kinetic_core::types::clock::KynNetworkExt;
             match kyn_provider.load_cached() {
                 Ok(kyn) => kyn.kyn,
@@ -228,7 +228,7 @@ pub fn handle_publish_action(params: Option<Value>) -> JsonResponse {
         let mut envelope = vec![kinetic_types::network::NetworkOpcode::Action as u8];
         envelope.extend(payload_bytes);
 
-        match get_network().broadcast_gossip(kinetic_core::constants::GOSSIP_TOPIC_GLOBAL, envelope).await {
+        match match get_network() { Some(n) => n, None => return not_initialized() }.broadcast_gossip(kinetic_core::constants::GOSSIP_TOPIC_GLOBAL, envelope).await {
             Ok(_) => {
                 tracing::info!("Successfully published Action Message to the Gossip network");
                 JsonResponse {

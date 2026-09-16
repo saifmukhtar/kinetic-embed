@@ -5,7 +5,7 @@
 //! - `get_network_status` — raw network status JSON from the NetworkClient
 
 use crate::JsonResponse;
-use crate::state::{get_network, RUNTIME};
+use crate::state::{get_network, not_initialized, RUNTIME};
 use serde_json::Value;
 
 /// Returns a flat metrics snapshot: peers, bandwidth, kyn, nat_status, uptime.
@@ -13,14 +13,10 @@ use serde_json::Value;
 pub fn handle_get_metrics(_params: Option<Value>) -> JsonResponse {
     let rt = match RUNTIME.get() {
         Some(r) => r,
-        None => return JsonResponse {
-            status: "error".to_string(),
-            data: None,
-            error: Some("Kinetic not initialized. Call init_kinetic first.".to_string()),
-        },
+        None => return not_initialized(),
     };
 
-    let network = get_network();
+    let network = match get_network() { Some(n) => n, None => return not_initialized() };
     let status = rt.block_on(async move { network.get_network_status().await });
 
     match status {
@@ -41,14 +37,10 @@ pub fn handle_get_metrics(_params: Option<Value>) -> JsonResponse {
 pub fn handle_get_connected_peers(_params: Option<Value>) -> JsonResponse {
     let rt = match RUNTIME.get() {
         Some(r) => r,
-        None => return JsonResponse {
-            status: "error".to_string(),
-            data: None,
-            error: Some("Kinetic not initialized. Call init_kinetic first.".to_string()),
-        },
+        None => return not_initialized(),
     };
 
-    let network = get_network();
+    let network = match get_network() { Some(n) => n, None => return not_initialized() };
     let peers = rt.block_on(async move { network.get_connected_peers().await });
 
     match peers {

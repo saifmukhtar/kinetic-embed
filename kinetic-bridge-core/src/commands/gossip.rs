@@ -1,8 +1,7 @@
 use crate::JsonResponse;
-use crate::state::{get_network, RUNTIME};
+use crate::state::{get_network, not_initialized, RUNTIME};
 use serde_json::Value;
 
-/// Subscribes to a Gossipsub topic and streams live events via Server-Sent Events (SSE).
 /// Subscribes to a Gossipsub topic and streams live events via the global C-Callback.
 pub fn handle_gossip_subscribe(params: Option<Value>) -> JsonResponse {
     let topic = match params.as_ref().and_then(|p| p.get("topic")).and_then(|t| t.as_str()) {
@@ -10,9 +9,19 @@ pub fn handle_gossip_subscribe(params: Option<Value>) -> JsonResponse {
         None => return JsonResponse { status: "error".to_string(), data: None, error: Some("Missing 'topic'".to_string()) },
     };
 
+    let gossip_tx = match crate::state::get_gossip_tx() {
+        Some(tx) => tx,
+        None => return not_initialized(),
+    };
+
+    let rt = match RUNTIME.get() {
+        Some(r) => r,
+        None => return not_initialized(),
+    };
+
     let task_topic = topic.clone();
-    RUNTIME.get().unwrap().spawn(async move {
-        let mut rx = crate::state::get_gossip_tx().subscribe();
+    rt.spawn(async move {
+        let mut rx = gossip_tx.subscribe();
         tracing::info!("Background task subscribed to gossip topic: {}", task_topic);
         
         while let Ok((msg_topic, payload, _, _)) = rx.recv().await {
@@ -58,8 +67,11 @@ pub fn handle_gossip_publish(params: Option<Value>) -> JsonResponse {
         Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Failed to serialize payload: {}", e)) },
     };
 
-    RUNTIME.get().unwrap().block_on(async {
-        match get_network().broadcast_gossip(&topic, payload_bytes).await {
+    let network = match get_network() { Some(n) => n, None => return not_initialized() };
+    let rt = match RUNTIME.get() { Some(r) => r, None => return not_initialized() };
+
+    rt.block_on(async move {
+        match network.broadcast_gossip(&topic, payload_bytes).await {
             Ok(_) => JsonResponse {
                 status: "success".to_string(),
                 data: Some(serde_json::json!({
@@ -74,8 +86,11 @@ pub fn handle_gossip_publish(params: Option<Value>) -> JsonResponse {
 
 /// Retrieves a list of active Gossipsub topics the node is currently listening to.
 pub fn handle_get_gossip_topics(_params: Option<Value>) -> JsonResponse {
-    RUNTIME.get().unwrap().block_on(async {
-        match get_network().get_gossip_topics().await {
+    let network = match get_network() { Some(n) => n, None => return not_initialized() };
+    let rt = match RUNTIME.get() { Some(r) => r, None => return not_initialized() };
+
+    rt.block_on(async move {
+        match network.get_gossip_topics().await {
             Ok(topics) => JsonResponse {
                 status: "success".to_string(),
                 data: Some(serde_json::json!({ "topics": topics })),

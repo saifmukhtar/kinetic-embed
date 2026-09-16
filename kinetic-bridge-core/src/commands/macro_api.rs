@@ -15,7 +15,7 @@
 
 use crate::JsonResponse;
 use serde_json::Value;
-use crate::state::{get_vdf_tasks, get_vdf_semaphore, get_storage, get_network, RUNTIME, VdfTaskStatus};
+use crate::state::{get_vdf_tasks, get_vdf_semaphore, get_storage, get_network, not_initialized, RUNTIME, VdfTaskStatus};
 use kinetic_core::traits::StorageEngine;
 use tracing;
 
@@ -99,8 +99,8 @@ pub fn handle_macro_register_name(params: Option<Value>) -> JsonResponse {
 
     // Spawn blocking backgkyn task
     let tasks_clone = get_vdf_tasks();
-    let network_clone = get_network();
-    let storage_clone = get_storage();
+    let network_clone = match get_network() { Some(n) => n, None => return not_initialized() };
+    let storage_clone = match get_storage() { Some(s) => s, None => return not_initialized() };
     let task_id_clone = task_id.clone();
     let iterations = req.iterations.unwrap_or(4_194_304);
 
@@ -452,8 +452,8 @@ pub fn handle_macro_renew_name(params: Option<Value>) -> JsonResponse {
     drop(tasks);
 
     let tasks_clone = get_vdf_tasks();
-    let network_clone = get_network();
-    let storage_clone = get_storage();
+    let network_clone = match get_network() { Some(n) => n, None => return not_initialized() };
+    let storage_clone = match get_storage() { Some(s) => s, None => return not_initialized() };
     let task_id_clone = task_id.clone();
     let iterations = req.iterations.unwrap_or(4_194_304);
 
