@@ -5,14 +5,10 @@ use tracing;
 
 /// Gracefully shuts down the Kinetic engine.
 ///
-/// On mobile there is no UNIX `main()` loop waiting on `API_SHUTDOWN`,
-/// so we directly:
-/// 1. Abort the background `NetworkEventLoop` task via its stored `AbortHandle`.
-/// 2. Call `Runtime::shutdown_background()` to drain the Tokio thread pool
-///    without blocking the calling thread.
-///
-/// After this returns the bridge is no longer functional until the app calls
-/// `init_kinetic` again (which it normally won't — app is closing).
+/// On mobile, to fully terminate blocking VDF math threads without
+/// cancellation tokens, we use Option A: detonate the process.
+/// This replicates the desktop daemon behavior where `/system/shutdown`
+/// exits the process.
 pub fn handle_shutdown(_params: Option<Value>) -> JsonResponse {
     tracing::info!("Shutdown requested via bridge. Stopping network loop...");
 
@@ -22,31 +18,29 @@ pub fn handle_shutdown(_params: Option<Value>) -> JsonResponse {
         tracing::info!("Network event loop aborted.");
     }
 
-    // Step 2: Shut down the Tokio runtime gracefully (non-blocking).
-    // We can't call `runtime.shutdown_timeout()` because that would block
-    // this very thread which is running inside the runtime's thread pool.
-    // `shutdown_background()` starts the shutdown and returns immediately.
+    // Step 2: Detonate the process to kill VDF threads.
     if let Some(rt) = RUNTIME.get() {
-        // SAFETY: We are not inside an async context here (this fn is sync).
-        // The background threads will drain within ~500ms.
+        // We sleep for 500ms first so that the FFI can actually return the
+        // JSON success response to the Kotlin/Swift caller before dying.
         rt.spawn(async {
-            // Give in-flight async work a moment to complete.
-            tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            tracing::warn!("Executing strict Option A shutdown: exiting process to kill VDF threads.");
+            std::process::exit(0);
         });
     }
 
     tracing::info!("Kinetic bridge shutdown complete.");
     JsonResponse {
         status: "ok".to_string(),
-        data: Some(serde_json::json!({ "message": "Shutdown initiated" })),
+        data: Some(serde_json::json!({ "message": "Shutdown initiated, process exiting in 500ms" })),
         error: None,
     }
 }
 
-/// On mobile there is no service manager restart — we just shut down.
-/// The OS (Android/iOS) is responsible for re-launching the app if needed.
+/// Restart alias — simply triggers the same process exit.
+/// The mobile OS (or the app's internal logic) will handle re-launching the Activity.
 pub fn handle_restart(_params: Option<Value>) -> JsonResponse {
-    tracing::info!("Restart requested via bridge. Delegating to shutdown...");
+    tracing::info!("Restart requested via bridge. Delegating to shutdown Option A...");
     handle_shutdown(_params)
 }
 
