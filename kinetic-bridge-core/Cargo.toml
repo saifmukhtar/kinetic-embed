@@ -23,3 +23,13 @@ tracing = "0.1"
 uuid = { version = "1.10", features = ["v4"] }
 getrandom = "0.2"
 rustls = { version = "0.23", features = ["ring"] }
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[profile.release]
+opt-level = "z"     # Optimize for size
+lto = true          # Link Time Optimization (smaller and faster)
+codegen-units = 1   # Maximize size reduction
+strip = true        # Strip symbols from the binary
+panic = "abort"     # Abort on panic instead of unwinding (saves space)
