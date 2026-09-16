@@ -7,6 +7,7 @@ pub mod gossip;
 pub mod heartbeat;
 pub mod kid;
 pub mod macro_api;
+pub mod metric;
 pub mod nrs;
 pub mod system;
 pub mod time;

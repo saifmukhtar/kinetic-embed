@@ -45,6 +45,9 @@ pub fn execute_command(json_input: &str) -> String {
     let response = match req.method.as_str() {
         // Bootstrapper — must be called first by the mobile app.
         "init_kinetic" => commands::bootstrap::handle_init_kinetic(req.params),
+        "get_metrics"          => commands::metric::handle_get_metrics(req.params),
+        "get_connected_peers"  => commands::metric::handle_get_connected_peers(req.params),
+
         "get_action_status" => commands::action::handle_get_action_status(req.params),
         "get_action_names" => commands::action::handle_get_action_names(req.params),
         "publish_action" => commands::action::handle_publish_action(req.params),

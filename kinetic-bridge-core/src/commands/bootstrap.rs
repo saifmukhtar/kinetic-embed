@@ -192,7 +192,9 @@ pub fn handle_init_kinetic(params: Option<Value>) -> JsonResponse {
         .map_err(|e| format!("Failed to boot network: {}", e))?;
 
         // Detach the event loop — it runs forever in the background.
-        tokio::spawn(network_loop.run());
+        // We store the AbortHandle so shutdown_kinetic can cancel it cleanly.
+        let join_handle = tokio::spawn(network_loop.run());
+        let _ = crate::state::NETWORK_LOOP_HANDLE.set(join_handle.abort_handle());
 
         // Step 11: Commit to global singletons.
         let _ = STORAGE.set(storage);

@@ -19,6 +19,10 @@ pub fn get_owned_names_lock() -> &'static Mutex<()> {
 
 pub static GOSSIP_TX: OnceLock<tokio::sync::broadcast::Sender<(String, Vec<u8>, kinetic_network::libp2p::gossipsub::MessageId, kinetic_network::libp2p::PeerId)>> = OnceLock::new();
 
+/// Abort handle for the `NetworkEventLoop::run()` background task.
+/// Stored during `init_kinetic` so that `shutdown_kinetic` can cancel it cleanly.
+pub static NETWORK_LOOP_HANDLE: OnceLock<tokio::task::AbortHandle> = OnceLock::new();
+
 pub fn get_gossip_tx() -> tokio::sync::broadcast::Sender<(String, Vec<u8>, kinetic_network::libp2p::gossipsub::MessageId, kinetic_network::libp2p::PeerId)> {
     GOSSIP_TX.get_or_init(|| {
         let (tx, _) = tokio::sync::broadcast::channel(1000);
