@@ -94,8 +94,8 @@ pub fn execute_command(json_input: &str) -> String {
         "macro_register_name" => commands::macro_api::handle_macro_register_name(req.params),
         "macro_renew_name" => commands::macro_api::handle_macro_renew_name(req.params),
         
-        "shutdown" => commands::system::handle_shutdown(req.params),
-        "restart" => commands::system::handle_restart(req.params),
+        "shutdown_kinetic" => commands::system::handle_shutdown(req.params),
+        "restart_kinetic" => commands::system::handle_restart(req.params),
         "get_ca_cert" => commands::system::handle_get_ca_cert(req.params),
         
         "publish_record" => commands::nrs::handle_publish_record(req.params),
