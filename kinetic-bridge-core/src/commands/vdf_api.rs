@@ -242,8 +242,8 @@ pub fn handle_validate_name(params: Option<Value>) -> JsonResponse {
     };
 
     let normalized = kinetic_core::types::names::normalize_name(&req.name);
-    let is_reserved = kinetic_core::types::names::is_reserved_name(&normalized)
-        || kinetic_types::protocol::is_protocol_name(&normalized);
+    let is_reserved = kinetic_core::types::names::is_reserved_name(&normalized);
+        
 
     let res = match kinetic_core::types::names::is_valid_apex_name(&normalized) {
         Ok(_) => ValidateResponse {

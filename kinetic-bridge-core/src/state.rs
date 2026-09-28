@@ -5,14 +5,14 @@ use kinetic_storage::KineticStorage;
 use kinetic_network::client::NetworkClient;
 use tokio::runtime::Runtime;
 use tokio::sync::Semaphore;
-use kinetic_primitives::keys::KineticKeypair;
+use kinetic_primitives::keypairs::IdentityPrivKey;
 
 // ── Core singletons ─────────────────────────────────────────────────────────
 
 pub static RUNTIME: OnceLock<Runtime> = OnceLock::new();
 pub static STORAGE: OnceLock<Arc<KineticStorage>> = OnceLock::new();
 pub static NETWORK: OnceLock<NetworkClient> = OnceLock::new();
-pub static KEYPAIR: OnceLock<KineticKeypair> = OnceLock::new();
+pub static KEYPAIR: OnceLock<IdentityPrivKey> = OnceLock::new();
 
 /// Abort handle for the `NetworkEventLoop::run()` background task.
 /// Stored during `init_kinetic` so that `handle_shutdown` can cancel it cleanly.
@@ -28,8 +28,8 @@ pub static GOSSIP_TX: OnceLock<
     tokio::sync::broadcast::Sender<(
         String,
         Vec<u8>,
-        kinetic_network::libp2p::gossipsub::MessageId,
-        kinetic_network::libp2p::PeerId,
+        kinetic_network::MessageId,
+        kinetic_network::PeerId,
     )>,
 > = OnceLock::new();
 
@@ -39,8 +39,8 @@ pub fn get_gossip_tx() -> Option<
     tokio::sync::broadcast::Sender<(
         String,
         Vec<u8>,
-        kinetic_network::libp2p::gossipsub::MessageId,
-        kinetic_network::libp2p::PeerId,
+        kinetic_network::MessageId,
+        kinetic_network::PeerId,
     )>,
 > {
     GOSSIP_TX.get().cloned()
@@ -60,7 +60,7 @@ pub fn get_network() -> Option<NetworkClient> {
     NETWORK.get().cloned()
 }
 
-pub fn get_keypair() -> Option<KineticKeypair> {
+pub fn get_keypair() -> Option<IdentityPrivKey> {
     KEYPAIR.get().cloned()
 }
 

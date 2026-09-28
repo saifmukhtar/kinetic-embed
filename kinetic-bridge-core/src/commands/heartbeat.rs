@@ -37,7 +37,7 @@ const STALE_HEARTBEAT_MAX_KYNS: u64 = 28_800;
 
 /// Safely fetches the current Kyn using the network client, with verified local database cache fallback.
 async fn get_safe_current_kyn(network: &kinetic_network::client::NetworkClient, storage: &std::sync::Arc<kinetic_storage::KineticStorage>) -> u64 {
-    if let Ok(kyn) = network.get_current_kyn().await {
+    if let Ok(kyn) = network.current_kyn().await {
         if kyn > 0 {
             return kyn;
         }
@@ -47,8 +47,8 @@ async fn get_safe_current_kyn(network: &kinetic_network::client::NetworkClient, 
         kinetic_network::client::beacon::BeaconProvider::new(Some(storage.clone()));
     use kinetic_core::traits::KynProvider;
     match kyn_provider.load_cached() {
-        Ok(kyn) if kyn.kyn > 0 => kyn.kyn,
-        _ => kinetic_kyn::types::0,
+        Ok(kyn) if kyn.beacon_idx > 0 => kyn.beacon_idx,
+        _ => 0,
     }
 }
 
@@ -86,7 +86,7 @@ pub fn handle_get_heartbeat_status(_params: Option<Value>) -> JsonResponse {
                 match network_res {
                     Ok(bytes) => {
                         if let Ok(hb) = serde_json::from_slice::<Heartbeat>(&bytes) {
-                            let age = current_kyn.saturating_sub(hb.latest_kyn);
+                            let age = current_kyn.saturating_sub(hb.latest_kyn.0);
                             let status = if age <= ACTIVE_HEARTBEAT_MAX_KYNS {
                                 "Active"
                             } else if age <= STALE_HEARTBEAT_MAX_KYNS {
@@ -97,7 +97,7 @@ pub fn handle_get_heartbeat_status(_params: Option<Value>) -> JsonResponse {
                             statuses.push(HeartbeatStatusResponse {
                                 name,
                                 status: status.to_string(),
-                                latest_kyn: hb.latest_kyn,
+                                latest_kyn: hb.latest_kyn.0,
                                 kyns_idle: age,
                             });
                         } else {
@@ -153,8 +153,8 @@ pub fn handle_post_heartbeat(params: Option<Value>) -> JsonResponse {
 
         let mut heartbeat = Heartbeat {
             name: normalized.clone(),
-            latest_kyn: current_kyn,
-            signature: vec![],
+            latest_kyn: kinetic_kyn::types::Kyn(current_kyn),
+            owner_signature: kinetic_primitives::keypairs::IdentitySignature(vec![]),
             authorization: None,
         };
 
@@ -164,7 +164,7 @@ pub fn handle_post_heartbeat(params: Option<Value>) -> JsonResponse {
             Ok(s) => s,
             Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Task spawn failed: {}", e)) },
         };
-        heartbeat.identity_signature = sig_bytes;
+        heartbeat.owner_signature = sig_bytes;
 
         let payload = match serde_json::to_vec(&heartbeat) {
             Ok(p) => p,
@@ -212,7 +212,7 @@ pub fn handle_post_fat_heartbeat(params: Option<Value>) -> JsonResponse {
     let req: FatHeartbeatRequest = match p.get("payload") {
         Some(payload) => match serde_json::from_value(payload.clone()) {
             Ok(r) => r,
-            Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Invalid FatHeartbeatRequest payload: {}", e)) },
+            Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Invalid FatHeartbeatRequest embedded_nrs: {}", e)) },
         },
         None => return JsonResponse { status: "error".to_string(), data: None, error: Some("Missing 'payload'".to_string()) },
     };
@@ -238,7 +238,7 @@ pub fn handle_post_fat_heartbeat(params: Option<Value>) -> JsonResponse {
         Ok(b) => b,
         Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Invalid hot_key_hex: {}", e)) },
     };
-    let keypair = match kinetic_primitives::keys::KineticKeypair::from_slice(&hot_key_bytes) {
+    let keypair = match kinetic_primitives::keypairs::IdentityPrivKey::from_slice(&hot_key_bytes) {
         Ok(k) => k,
         Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Invalid ML-DSA keypair: {}", e)) },
     };
@@ -251,8 +251,8 @@ pub fn handle_post_fat_heartbeat(params: Option<Value>) -> JsonResponse {
 
         let mut heartbeat = Heartbeat {
             name: normalized.clone(),
-            latest_kyn: current_kyn,
-            signature: vec![],
+            latest_kyn: kinetic_kyn::types::Kyn(current_kyn),
+            owner_signature: kinetic_primitives::keypairs::IdentitySignature(vec![]),
             authorization: Some(Box::new(req.authorized_manifest)),
         };
 
@@ -262,7 +262,7 @@ pub fn handle_post_fat_heartbeat(params: Option<Value>) -> JsonResponse {
             Ok(s) => s,
             Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Task spawn failed: {}", e)) },
         };
-        heartbeat.identity_signature = sig_bytes;
+        heartbeat.owner_signature = sig_bytes;
 
         let payload = match serde_json::to_vec(&heartbeat) {
             Ok(p) => p,

@@ -25,14 +25,13 @@ use crate::state::{get_network, get_storage, not_initialized, RUNTIME};
 use kinetic_core::traits::KynProvider;
 use kinetic_core::traits::StorageEngine;
 use kinetic_core::types::vdf::RevealExt;
-use kinetic_kyn::types::KynNetworkExt;
 use kinetic_verify::signatures::VerifySignature;
 use kinetic_kyn::types::Kyn;
 use serde_json::Value;
 
 /// Safely fetches the current Kyn using the network client, with verified local database cache fallback.
 async fn get_safe_current_kyn(network: &kinetic_network::client::NetworkClient, storage: &std::sync::Arc<kinetic_storage::KineticStorage>) -> Kyn {
-    if let Ok(kyn) = network.get_current_kyn().await {
+    if let Ok(kyn) = network.current_kyn().await {
         if kyn > 0 {
             return Kyn(kyn);
         }
@@ -41,7 +40,7 @@ async fn get_safe_current_kyn(network: &kinetic_network::client::NetworkClient, 
     let kyn_provider =
         kinetic_network::client::beacon::BeaconProvider::new(Some(storage.clone()));
     match kyn_provider.load_cached() {
-        Ok(kyn) if kyn.kyn > 0 => Kyn(kyn.kyn),
+        Ok(kyn) if kyn.beacon_idx > 0 => Kyn(kyn.beacon_idx),
         _ => kinetic_kyn::types::Kyn(0),
     }
 }
@@ -80,7 +79,7 @@ pub fn handle_publish_record(params: Option<Value>) -> JsonResponse {
                 return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Invalid Reveal: {}", e)) };
             }
             is_standard = true;
-            kyn = reveal.kyn;
+            kyn = reveal.kyn.0.0;
         }
 
         // Enforce Time Oracle staleness
@@ -376,7 +375,7 @@ pub fn handle_verify_quorum(params: Option<Value>) -> JsonResponse {
     let record: kinetic_types::name_record::NameEnvelope = match p.get("record") {
         Some(r) => match serde_json::from_value(r.clone()) {
             Ok(rec) => rec,
-            Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Invalid NameEnvelope payload: {}", e)) },
+            Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Invalid NameEnvelope embedded_nrs: {}", e)) },
         },
         None => return JsonResponse { status: "error".to_string(), data: None, error: Some("Missing 'record'".to_string()) },
     };
@@ -490,7 +489,7 @@ pub fn handle_post_zone(params: Option<Value>) -> JsonResponse {
     let zone: kinetic_core::types::NrsZone = match p.get("zone") {
         Some(r) => match serde_json::from_value(r.clone()) {
             Ok(rec) => rec,
-            Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Invalid NrsZone payload: {}", e)) },
+            Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Invalid NrsZone embedded_nrs: {}", e)) },
         },
         None => return JsonResponse { status: "error".to_string(), data: None, error: Some("Missing 'zone'".to_string()) },
     };
@@ -572,8 +571,8 @@ pub fn handle_publish_zone(params: Option<Value>) -> JsonResponse {
 
         // 3. Load the daemon keypair and re-sign with the updated payload
         let keypair = match crate::state::get_keypair() { Some(k) => k, None => return not_initialized() };
-        let pubkey_bytes = keypair.as_bytes();
-        if record.pubkey() != pubkey_bytes.as_slice() {
+        let pubkey_bytes = keypair.to_pubkey().as_bytes().to_vec();
+        if record.pubkey() != &keypair.to_pubkey() {
             return JsonResponse { status: "error".to_string(), data: None, error: Some("The daemon key does not match the owner key for this name registration.".to_string()) };
         }
 
@@ -587,28 +586,6 @@ pub fn handle_publish_zone(params: Option<Value>) -> JsonResponse {
                 r.embedded_nrs = payload;
                 let signable = r.signable_bytes(kinetic_core::constants::NETWORK_SALT);
                 r.identity_signature = keypair.sign(&signable);
-            }
-            kinetic_types::name_record::NameEnvelope::Prime {
-                name,
-                payload: p,
-                signature: s,
-                ..
-            }
-            | kinetic_types::name_record::NameEnvelope::Infra {
-                name,
-                payload: p,
-                signature: s,
-                ..
-            } => {
-                *p = payload.clone();
-                let mut signable = Vec::new();
-                signable.extend_from_slice(&(name.len() as u32).to_be_bytes());
-                signable.extend_from_slice(name.as_bytes());
-                signable.extend_from_slice(&(payload.len() as u32).to_be_bytes());
-                signable.extend_from_slice(&payload);
-                signable.extend_from_slice(kinetic_core::constants::NETWORK_SALT);
-
-                *s = keypair.sign(&signable);
             }
         }
 
@@ -658,7 +635,7 @@ pub fn handle_post_local_zone(params: Option<Value>) -> JsonResponse {
     let zone: kinetic_core::types::NrsZone = match p.get("zone") {
         Some(r) => match serde_json::from_value(r.clone()) {
             Ok(rec) => rec,
-            Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Invalid NrsZone payload: {}", e)) },
+            Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Invalid NrsZone embedded_nrs: {}", e)) },
         },
         None => return JsonResponse { status: "error".to_string(), data: None, error: Some("Missing 'zone'".to_string()) },
     };
@@ -829,7 +806,7 @@ pub fn handle_publish_fat_zone(params: Option<Value>) -> JsonResponse {
             Ok(b) => b,
             Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Invalid hot_key_hex: {}", e)) },
         };
-        let keypair = match kinetic_primitives::keys::KineticKeypair::from_slice(&hot_key_bytes) {
+        let keypair = match kinetic_primitives::keypairs::IdentityPrivKey::from_slice(&hot_key_bytes) {
             Ok(k) => k,
             Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Invalid ML-DSA keypair: {}", e)) },
         };
@@ -860,32 +837,6 @@ pub fn handle_publish_fat_zone(params: Option<Value>) -> JsonResponse {
                 reveal.authorization = Some(Box::new(req.authorized_manifest));
                 let signable = reveal.signable_bytes(kinetic_core::constants::NETWORK_SALT);
                 reveal.identity_signature = tokio::task::spawn_blocking(move || keypair.sign(&signable)).await.unwrap();
-            }
-            kinetic_types::name_record::NameEnvelope::Prime {
-                name,
-                payload,
-                authorization,
-                signature,
-                ..
-            }
-            | kinetic_types::name_record::NameEnvelope::Infra {
-                name,
-                payload,
-                authorization,
-                signature,
-                ..
-            } => {
-                *payload = payload_bytes;
-                *authorization = Some(Box::new(req.authorized_manifest));
-
-                let mut signable = Vec::new();
-                signable.extend_from_slice(&(name.len() as u32).to_be_bytes());
-                signable.extend_from_slice(name.as_bytes());
-                signable.extend_from_slice(&(payload.len() as u32).to_be_bytes());
-                signable.extend_from_slice(payload);
-                signable.extend_from_slice(kinetic_core::constants::NETWORK_SALT);
-
-                *signature = tokio::task::spawn_blocking(move || keypair.sign(&signable)).await.unwrap();
             }
         }
 

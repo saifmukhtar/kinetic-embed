@@ -142,16 +142,10 @@ pub fn handle_macro_register_name(params: Option<Value>) -> JsonResponse {
                 return;
             }
         };
-        let pubkey = keypair.as_bytes();
+        let pubkey = keypair.to_pubkey();
         let mut salt = [0u8; 32];
-        if let Err(e) = getrandom::getrandom(&mut salt) {
-            update_task_error(
-                &tasks_clone,
-                &task_id_clone,
-                format!("Failed to generate secure random salt: {}", e),
-            );
-            return;
-        }
+        salt[0..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+        salt[16..32].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
         let sig_bytes = match hex::decode(&drand_data.signature) {
             Ok(b) => b,
             Err(e) => {
@@ -243,17 +237,7 @@ pub fn handle_macro_register_name(params: Option<Value>) -> JsonResponse {
             return;
         }
 
-        // Wait enough kyns to satisfy the commit_age rule in verify_reveal.
-        let wait_secs = (kinetic_core::constants::CONSENSUS_MINIMUM_COMMIT_AGE_KYNS
-            * kinetic_core::constants::DRAND_PERIOD)
-            + 2;
-        update_task_status(
-            &tasks_clone,
-            &task_id_clone,
-            &format!("Maturing commitment ({} s)...", wait_secs),
-            88,
-        );
-        tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
+        // Commit age rule was removed from VDF protocol. No need to sleep.
 
         update_task_status(&tasks_clone, &task_id_clone, "Publishing Registration", 90);
 
@@ -263,10 +247,9 @@ pub fn handle_macro_register_name(params: Option<Value>) -> JsonResponse {
             let kyn_provider =
                 kinetic_network::client::beacon::BeaconProvider::new(Some(storage_clone.clone()));
             use kinetic_core::traits::KynProvider;
-            use kinetic_kyn::types::KynNetworkExt;
             match kyn_provider.load_cached() {
-                Ok(kyn) => kyn.kyn,
-                Err(_) => kinetic_kyn::types::0,
+                Ok(kyn) => kyn.beacon_idx,
+                Err(_) => 0,
             }
         };
         let current_kyn = kinetic_kyn::types::Kyn(current_kyn);
@@ -294,7 +277,7 @@ pub fn handle_macro_register_name(params: Option<Value>) -> JsonResponse {
         let mut records = HashMap::new();
         records.insert(
             "@".to_string(),
-            vec![kinetic_types::name_record::NrsRecord::KID(kid_id)],
+            vec![kinetic_types::nrs::NrsEntry::KID(kid_id)],
         );
         let zone = kinetic_core::types::NrsZone { records };
         let payload = match serde_json::to_vec(&zone) {
@@ -316,16 +299,16 @@ pub fn handle_macro_register_name(params: Option<Value>) -> JsonResponse {
         let mut reveal = kinetic_types::vdf::Reveal {
             protocol_version: 1,
             name: fqdn.clone(),
-            payload,
+            embedded_nrs: payload,
             salt,
-            kyn: drand_data.kyn(),
+            kyn: kinetic_kyn::types::TargetKyn(kinetic_kyn::types::Kyn(drand_data.beacon_idx)),
             beacon_signature: drand_data.signature.clone(),
             iterations: actual_iterations,
             vdf_proof: kinetic_core::types::VdfProof {
                 proof_bytes: proof.proof_bytes,
             },
-            pubkey: pubkey.to_vec(),
-            signature: vec![],
+            pubkey: kinetic_primitives::keypairs::IdentityPubKey(pubkey.0.clone()),
+            identity_signature: kinetic_primitives::keypairs::IdentitySignature(vec![]),
             authorization: None,
             previous_proof: None,
         };
@@ -492,15 +475,6 @@ pub fn handle_macro_renew_name(params: Option<Value>) -> JsonResponse {
         };
         let old_reveal = match old_record {
             kinetic_types::name_record::NameEnvelope::Standard(r) => r,
-            kinetic_types::name_record::NameEnvelope::Prime { .. }
-            | kinetic_types::name_record::NameEnvelope::Infra { .. } => {
-                update_task_error(
-                    &tasks_clone,
-                    &task_id_clone,
-                    "Prime/Infra names do not require VDF resquaring".to_string(),
-                );
-                return;
-            }
         };
 
         // Step 2: KYN Time Oracle
@@ -530,16 +504,10 @@ pub fn handle_macro_renew_name(params: Option<Value>) -> JsonResponse {
                 return;
             }
         };
-        let pubkey_bytes = keypair.as_bytes();
+        let pubkey_bytes = keypair.to_pubkey();
         let mut salt = [0u8; 32];
-        if let Err(e) = getrandom::getrandom(&mut salt) {
-            update_task_error(
-                &tasks_clone,
-                &task_id_clone,
-                format!("Failed to generate secure random salt: {}", e),
-            );
-            return;
-        }
+        salt[0..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+        salt[16..32].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
         let sig_bytes = match hex::decode(&drand_data.signature) {
             Ok(b) => b,
             Err(e) => {
@@ -632,17 +600,7 @@ pub fn handle_macro_renew_name(params: Option<Value>) -> JsonResponse {
             return;
         }
 
-        // Wait enough kyns to satisfy the commit_age rule in verify_reveal.
-        let wait_secs = (kinetic_core::constants::CONSENSUS_MINIMUM_COMMIT_AGE_KYNS
-            * kinetic_core::constants::DRAND_PERIOD)
-            + 2;
-        update_task_status(
-            &tasks_clone,
-            &task_id_clone,
-            &format!("Maturing commitment ({} s)...", wait_secs),
-            88,
-        );
-        tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
+        // Commit age rule was removed from VDF protocol. No need to sleep.
 
         update_task_status(&tasks_clone, &task_id_clone, "Publishing Renewal", 90);
 
@@ -652,22 +610,22 @@ pub fn handle_macro_renew_name(params: Option<Value>) -> JsonResponse {
             beacon_signature: old_reveal.beacon_signature.clone(),
             iterations: old_reveal.iterations,
             vdf_proof: old_reveal.vdf_proof.clone(),
-            signature: old_reveal.identity_signature.clone(),
+            identity_signature: old_reveal.identity_signature.clone(),
         };
 
         let mut new_reveal = kinetic_types::vdf::Reveal {
             protocol_version: 1,
             name: fqdn.clone(),
-            payload: old_reveal.embedded_nrs.clone(), // Keep existing zone payload
+            embedded_nrs: old_reveal.embedded_nrs.clone(), // Keep existing zone payload
             salt,
-            kyn: drand_data.kyn(),
+            kyn: kinetic_kyn::types::TargetKyn(kinetic_kyn::types::Kyn(drand_data.beacon_idx)),
             beacon_signature: drand_data.signature.clone(),
             iterations: actual_iterations,
             vdf_proof: kinetic_core::types::VdfProof {
                 proof_bytes: proof.proof_bytes,
             },
-            pubkey: pubkey_bytes.to_vec(),
-            signature: vec![],
+            pubkey: kinetic_primitives::keypairs::IdentityPubKey(pubkey_bytes.0.clone()),
+            identity_signature: kinetic_primitives::keypairs::IdentitySignature(vec![]),
             authorization: None,
             previous_proof: Some(previous_proof),
         };

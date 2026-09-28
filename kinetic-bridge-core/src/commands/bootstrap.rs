@@ -4,7 +4,7 @@
 //! This function:
 //! 1. Builds the Tokio multi-thread runtime and stores it in `RUNTIME`.
 //! 2. Opens the RocksDB storage engine and stores it in `STORAGE`.
-//! 3. Loads or generates the user's `KineticKeypair` and stores it in `KEYPAIR`.
+//! 3. Loads or generates the user's `IdentityPrivKey` and stores it in `KEYPAIR`.
 //! 4. Boots the libp2p `NetworkEventLoop`, connects to bootstrap nodes, and stores
 //!    the resulting `NetworkClient` in `NETWORK`.
 //!
@@ -62,7 +62,7 @@ pub fn handle_init_kinetic(params: Option<Value>) -> JsonResponse {
 
     // Step 1: Install the Rustls crypto provider (required for TLS on mobile).
     // Ignore error if it was already installed.
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    // (Moved to kinetic-network NetworkEventLoop::new)
 
     // Step 2: Build the Tokio multi-thread runtime.
     let rt = match tokio::runtime::Builder::new_multi_thread()
@@ -97,11 +97,11 @@ pub fn handle_init_kinetic(params: Option<Value>) -> JsonResponse {
             Ok(k) => k,
             Err(_) => {
                 // First run — generate and persist a new identity.
-                let new_kp = kinetic_primitives::keys::KineticKeypair::generate();
+                let new_kp = kinetic_primitives::keypairs::IdentityPrivKey::generate();
                 // Persist raw seed bytes securely.
                 if let Err(e) = kinetic_local::secure_fs::write_secret(
                     &identity_path,
-                    &new_kp.to_bytes(),
+                    &new_kp.to_secret_bytes(),
                 ) {
                     tracing::warn!("Could not persist new identity: {}", e);
                 }
@@ -115,8 +115,8 @@ pub fn handle_init_kinetic(params: Option<Value>) -> JsonResponse {
         );
         let initial_kyn = match kyn_provider.fetch_latest().await {
             Ok(k) => {
-                tracing::info!("KYN Time Oracle connected — kyn #{}", k.kyn);
-                k.kyn
+                tracing::info!("KYN Time Oracle connected — kyn #{}", k.kyn());
+                k.kyn()
             }
             Err(e) => {
                 tracing::warn!("KYN unavailable on startup (offline?): {}. Proceeding with kyn=0.", e);
@@ -125,10 +125,7 @@ pub fn handle_init_kinetic(params: Option<Value>) -> JsonResponse {
         };
 
         // Step 6: Mine the P2P keypair (CPU-bound, ~1 second on mobile).
-        let local_key = kinetic_network::pow::mine_p2p_keypair(
-            kinetic_types::clock::Kyn(initial_kyn),
-            kinetic_core::constants::POW_DIFFICULTY_BITS,
-        );
+        let local_key = kinetic_network::Keypair::generate_ed25519();
 
         // Step 7: Set up the Kyn broadcast watch channel.
         let (_kyn_tx, kyn_rx) = tokio::sync::watch::channel(initial_kyn);
@@ -137,8 +134,8 @@ pub fn handle_init_kinetic(params: Option<Value>) -> JsonResponse {
         let (gossip_tx, _gossip_rx) = tokio::sync::broadcast::channel::<(
             String,
             Vec<u8>,
-            kinetic_network::libp2p::gossipsub::MessageId,
-            kinetic_network::libp2p::PeerId,
+            kinetic_network::MessageId,
+            kinetic_network::PeerId,
         )>(256);
         // Store gossip sender for gossip_subscribe to use.
         let _ = GOSSIP_TX.set(gossip_tx.clone());
@@ -167,13 +164,13 @@ pub fn handle_init_kinetic(params: Option<Value>) -> JsonResponse {
             enable_mdns: false,   // mDNS is LAN-only; not useful on mobile data
             enable_upnp: false,   // UPnP not available on mobile NATs
             enable_relay_server: false,
-            initial_kyn,
+            initial_kyn: kinetic_kyn::types::InitialKyn(kinetic_kyn::types::Kyn(initial_kyn)),
             external_address: None,
             max_reveals_per_hour: 100,
             lru_cache_size: std::num::NonZeroUsize::new(1_000).unwrap(),
-            disable_pow: false,
             test_mode: false,
             disable_storage_sync: false,
+            disable_challenge: false,
         };
 
         let vdf_engine: Arc<dyn kinetic_core::traits::VdfEngine> =

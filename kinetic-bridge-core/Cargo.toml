@@ -1,12 +1,12 @@
 [package]
-name = "kinetic-bridge-core"
+name = "kinetic-embed"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-tokio = { version = "1.37", features = ["full"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["rt", "rt-multi-thread", "sync", "time"] }
 
 kinetic-core = { path = "/home/saif/kinetic/kinetic-core" }
 kinetic-kyn = { path = "/home/saif/kinetic/kinetic-kyn" }
@@ -20,10 +20,8 @@ kinetic-primitives = { path = "/home/saif/kinetic/kinetic-primitives" }
 kinetic-kid = { path = "/home/saif/kinetic/kinetic-kid" }
 kinetic-vdf = { path = "/home/saif/kinetic/kinetic-vdf" }
 hex = "0.4.3"
-tracing = "0.1"
-uuid = { version = "1.10", features = ["v4"] }
-getrandom = "0.2"
-rustls = { version = "0.23", features = ["ring"] }
+tracing = "0.1.44"
+uuid = { version = "1.26.1", features = ["v4"] }
 
 [lib]
 crate-type = ["cdylib", "staticlib"]

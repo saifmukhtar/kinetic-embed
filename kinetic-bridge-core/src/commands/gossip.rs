@@ -64,7 +64,7 @@ pub fn handle_gossip_publish(params: Option<Value>) -> JsonResponse {
 
     let payload_bytes = match serde_json::to_vec(&payload) {
         Ok(b) => b,
-        Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Failed to serialize payload: {}", e)) },
+        Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Failed to serialize embedded_nrs: {}", e)) },
     };
 
     let network = match get_network() { Some(n) => n, None => return not_initialized() };
@@ -85,12 +85,12 @@ pub fn handle_gossip_publish(params: Option<Value>) -> JsonResponse {
 }
 
 /// Retrieves a list of active Gossipsub topics the node is currently listening to.
-pub fn handle_get_gossip_topics(_params: Option<Value>) -> JsonResponse {
+pub fn handle_gossip_topics(_params: Option<Value>) -> JsonResponse {
     let network = match get_network() { Some(n) => n, None => return not_initialized() };
     let rt = match RUNTIME.get() { Some(r) => r, None => return not_initialized() };
 
     rt.block_on(async move {
-        match network.get_gossip_topics().await {
+        match network.gossip_topics().await {
             Ok(topics) => JsonResponse {
                 status: "success".to_string(),
                 data: Some(serde_json::json!({ "topics": topics })),

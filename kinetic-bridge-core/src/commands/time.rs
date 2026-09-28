@@ -11,8 +11,26 @@ use crate::JsonResponse;
 use serde_json::Value;
 use crate::state::{get_storage, not_initialized};
 use kinetic_core::traits::KynProvider;
-use kinetic_kyn::types::KineticTime;
 use tracing;
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct KineticTime {
+    pub kyn: u64,
+    pub facet: u64,
+    pub prism: u64,
+}
+
+impl KineticTime {
+    pub fn from_kyn(current: kinetic_kyn::types::Kyn, genesis: kinetic_kyn::types::Kyn) -> Self {
+        let age = current.0.saturating_sub(genesis.0);
+        Self {
+            kyn: age,
+            facet: age / 3600,
+            prism: age / 86400,
+        }
+    }
+}
 
 /// Returns the current verified Kinetic Time from the daemon's internal state.
 pub fn handle_get_time(_params: Option<Value>) -> JsonResponse {
@@ -26,8 +44,8 @@ pub fn handle_get_time(_params: Option<Value>) -> JsonResponse {
     match kyn_provider.load_cached() {
         Ok(drand_data) => {
             let time = KineticTime::from_kyn(
-                kinetic_kyn::types::Kyn(drand_data.kyn),
-                kinetic_kyn::types::Kyn(kinetic_core::constants::KINETIC_GENESIS_KYN),
+                kinetic_kyn::types::Kyn(drand_data.beacon_idx),
+                kinetic_kyn::types::Kyn(kinetic_core::constants::KYN_GENESIS),
             );
             JsonResponse {
                 status: "success".to_string(),

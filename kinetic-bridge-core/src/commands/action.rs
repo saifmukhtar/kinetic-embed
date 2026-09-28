@@ -2,7 +2,6 @@
 
 use crate::JsonResponse;
 use crate::state::{get_network, get_storage, not_initialized, RUNTIME};
-use kinetic_kyn::types::KynNetworkExt;
 use kinetic_local::action::GLOBAL_ACTION_STATE;
 use serde::Serialize;
 use serde_json::Value;
@@ -20,10 +19,6 @@ pub struct PausePeriod {
 /// High-level metrics summarizing the action state.
 #[derive(Serialize)]
 pub struct ActionMetrics {
-    /// Count of mapped prime names (e.g., .kin).
-    pub total_prime_names: usize,
-    /// Count of mapped infrastructure root names.
-    pub total_infra_names: usize,
     /// Total number of action/action commands executed since genesis.
     pub total_executed_actions: usize,
 }
@@ -64,7 +59,7 @@ pub fn handle_get_action_status(_params: Option<Value>) -> JsonResponse {
         }
     };
 
-    let active_key_hex = action_state.active_sovereign_key.as_ref().map(hex::encode);
+    let active_key_hex = action_state.active_sovereign_key.as_ref().map(|k| hex::encode(k.as_bytes()));
 
     // Fetch verified Kyn from the node's constantly updating local cache
     let current_kyn = {
@@ -72,38 +67,36 @@ pub fn handle_get_action_status(_params: Option<Value>) -> JsonResponse {
             kinetic_network::client::beacon::BeaconProvider::new(Some(match get_storage() { Some(s) => s, None => return not_initialized() }));
         use kinetic_core::traits::KynProvider;
         match kyn_provider.load_cached() {
-            Ok(kyn) => kyn.kyn,
-            Err(_) => kinetic_kyn::types::0, // Fallback to OS clock if DB is completely empty (genesis)
+            Ok(kyn) => kyn.beacon_idx,
+            Err(_) => 0, // Fallback to OS clock if DB is completely empty (genesis)
         }
     };
 
     let active_kyn_age = current_kyn
-        .saturating_sub(action_state.genesis_kyn.0)
+        .saturating_sub(action_state.genesis_kyn.0.0)
         .saturating_sub(action_state.total_paused_kyns);
 
     let last_pause = action_state
         .pause_history
         .last()
         .map(|(start, end)| PausePeriod {
-            start_kyn: start.0,
-            end_kyn: end.0,
+            start_kyn: start.0.0,
+            end_kyn: end.0.0,
         });
 
     let metrics = ActionMetrics {
-        total_prime_names: action_state.mapped_prime_names.len(),
-        total_infra_names: action_state.mapped_infra_names.len(),
         total_executed_actions: action_state.executed_hashes.len(),
     };
 
     JsonResponse {
         status: "success".to_string(),
         data: Some(serde_json::to_value(ActionStatusResponse {
-            genesis_kyn: action_state.genesis_kyn.0,
+            genesis_kyn: action_state.genesis_kyn.0.0,
             current_kyn,
             active_kyn_age,
             active_sovereign_key_hex: active_key_hex,
             is_halted: action_state.is_halted,
-            halt_start_kyn: action_state.halt_start_kyn.map(|k| k.0),
+            halt_start_kyn: action_state.halt_start_kyn.map(|k| k.0.0),
             total_paused_kyns: action_state.total_paused_kyns,
             last_pause,
             metrics,
@@ -134,17 +127,8 @@ pub fn handle_get_action_names(_params: Option<Value>) -> JsonResponse {
         }
     };
 
-    let primes = action_state
-        .mapped_prime_names
-        .iter()
-        .map(|(name, pubkey_bytes)| (name.clone(), hex::encode(pubkey_bytes)))
-        .collect::<HashMap<String, String>>();
-
-    let infras = action_state
-        .mapped_infra_names
-        .iter()
-        .map(|(name, pubkey_bytes)| (name.clone(), hex::encode(pubkey_bytes)))
-        .collect::<HashMap<String, String>>();
+    let primes = HashMap::new();
+    let infras = HashMap::new();
 
     JsonResponse {
         status: "success".to_string(),
@@ -161,9 +145,9 @@ pub struct PublishResponse {
     pub message: String,
 }
 
-/// Handles API requests to publish a `SignedActionMessage` to the DHT/Gossip network.
+/// Handles API requests to publish a `SignedNetworkAction` to the DHT/Gossip network.
 pub fn handle_publish_action(params: Option<Value>) -> JsonResponse {
-    let msg: kinetic_action::types::SignedActionMessage = match params {
+    let msg: kinetic_types::action::SignedNetworkAction = match params {
         Some(p) => match serde_json::from_value(p) {
             Ok(m) => m,
             Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Invalid params: {}", e)) }
@@ -177,12 +161,11 @@ pub fn handle_publish_action(params: Option<Value>) -> JsonResponse {
         let _current_kyn = {
             let kyn_provider =
                 kinetic_network::client::beacon::BeaconProvider::new(Some(match get_storage() { Some(s) => s, None => return not_initialized() }));
-            use kinetic_kyn::types::KynNetworkExt;
             match kyn_provider.load_cached() {
-                Ok(kyn) => kyn.kyn,
+                Ok(kyn) => kyn.beacon_idx,
                 Err(_) => match kyn_provider.fetch_latest().await {
-                    Ok(kyn) => kyn.kyn,
-                    Err(_) => kinetic_kyn::types::0,
+                    Ok(kyn) => kyn.beacon_idx,
+                    Err(_) => 0,
                 },
             }
         };
@@ -192,7 +175,7 @@ pub fn handle_publish_action(params: Option<Value>) -> JsonResponse {
             let res = kinetic_core::action::process_action_message(
                 &mut action_state,
                 &msg,
-                kinetic_types::clock::Kyn(0),
+                kinetic_kyn::types::CurrentKyn(kinetic_kyn::types::Kyn(0)),
             );
             match res {
                 Ok(_) => {
@@ -201,7 +184,7 @@ pub fn handle_publish_action(params: Option<Value>) -> JsonResponse {
                         .unwrap_or_else(|_| {
                             let config = kinetic_local::config::load_config();
                             kinetic_local::config::base_dir()
-                                .join(config.daemon.storage_dir)
+                                .join(config.peer.storage_dir)
                                 .join("action.db")
                         });
                     if let Err(e) = kinetic_local::action::save_action_to_disk(&action_state, &path) {

@@ -12,13 +12,12 @@ use serde_json::Value;
 use kinetic_core::traits::KynProvider;
 use kinetic_core::traits::StorageEngine;
 use kinetic_kyn::types::Kyn;
-use kinetic_kyn::types::KynNetworkExt;
 use serde::Deserialize;
 use tracing;
 
 /// Safely fetches the current Kyn using the network client, with verified local database cache fallback.
 async fn get_safe_current_kyn(network: &kinetic_network::client::NetworkClient, storage: &std::sync::Arc<kinetic_storage::KineticStorage>) -> Kyn {
-    if let Ok(kyn) = network.get_current_kyn().await {
+    if let Ok(kyn) = network.current_kyn().await {
         if kyn > 0 {
             return Kyn(kyn);
         }
@@ -27,7 +26,7 @@ async fn get_safe_current_kyn(network: &kinetic_network::client::NetworkClient, 
     let kyn_provider =
         kinetic_network::client::beacon::BeaconProvider::new(Some(storage.clone()));
     match kyn_provider.load_cached() {
-        Ok(kyn) if kyn.kyn > 0 => Kyn(kyn.kyn),
+        Ok(kyn) if kyn.beacon_idx > 0 => Kyn(kyn.beacon_idx),
         _ => kinetic_kyn::types::Kyn(0),
     }
 }
@@ -358,7 +357,7 @@ pub fn handle_resolve_kid(params: Option<Value>) -> JsonResponse {
                     // Fallback for older raw documents
                     match serde_json::from_slice(&kid_payload) {
                         Ok(d) => d,
-                        Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Invalid KID data payload: {}", e)) },
+                        Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Invalid KID data embedded_nrs: {}", e)) },
                     }
                 }
             };
@@ -425,10 +424,10 @@ pub fn handle_publish_kid(params: Option<Value>) -> JsonResponse {
         let is_authorized = match match get_storage() { Some(s) => s, None => return not_initialized() }.get(reveal_key.as_bytes()) {
             Ok(Some(bytes)) => {
                 if let Ok(record) = serde_json::from_slice::<kinetic_types::name_record::NameEnvelope>(&bytes) {
-                    kinetic_primitives::verify_mldsa(
-                        record.pubkey(),
+                    kinetic_primitives::verify_signature(
+                        record.pubkey().as_bytes(),
                         &auth_kid.signable_bytes(kinetic_core::constants::NETWORK_SALT),
-                        &auth_kid.owner_signature,
+                        &auth_kid.owner_signature.0,
                     )
                     .is_ok()
                 } else {
@@ -500,10 +499,10 @@ pub fn handle_publish_manifest(params: Option<Value>) -> JsonResponse {
         let is_authorized = match match get_storage() { Some(s) => s, None => return not_initialized() }.get(reveal_key.as_bytes()) {
             Ok(Some(bytes)) => {
                 if let Ok(record) = serde_json::from_slice::<kinetic_types::name_record::NameEnvelope>(&bytes) {
-                    kinetic_primitives::verify_mldsa(
-                        record.pubkey(),
+                    kinetic_primitives::verify_signature(
+                        record.pubkey().as_bytes(),
                         &auth_manifest.signable_bytes(kinetic_core::constants::NETWORK_SALT),
-                        &auth_manifest.owner_signature,
+                        &auth_manifest.owner_signature.0,
                     )
                     .is_ok()
                 } else {
@@ -527,7 +526,7 @@ pub fn handle_publish_manifest(params: Option<Value>) -> JsonResponse {
         // (Note: The DHT payload for a KID will now be an AuthorizedKid wrapper!)
         let kid_payload = match match get_network() { Some(n) => n, None => return not_initialized() }.resolve_redundant_payload(did_str).await {
             Ok(p) => p,
-            Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Failed to resolve KID payload: {}", e)) },
+            Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Failed to resolve KID embedded_nrs: {}", e)) },
         };
 
         let kid_doc: kinetic_kid::Document =
@@ -548,7 +547,7 @@ pub fn handle_publish_manifest(params: Option<Value>) -> JsonResponse {
         let current_network_time = get_safe_current_kyn(&network, &storage).await.to_ukyn(1_730_000_000).0;
         if let Err(e) = auth_manifest
             .manifest
-            .verify_at_time(&kid_doc, current_network_time)
+            .verify_at_time(&kid_doc, kinetic_kyn::types::UKyn(current_network_time))
         {
             return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Invalid Manifest signature: {}", e)) };
         }

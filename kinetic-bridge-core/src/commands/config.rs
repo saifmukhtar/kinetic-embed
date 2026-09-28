@@ -63,7 +63,7 @@ pub fn handle_owned_names(_params: Option<Value>) -> JsonResponse {
 pub fn handle_network_status(_params: Option<Value>) -> JsonResponse {
     let network = match get_network() { Some(n) => n, None => return not_initialized() };
     RUNTIME.get().unwrap().block_on(async move {
-        match network.get_network_status().await {
+        match network.network_status().await {
             Ok(status) => JsonResponse { status: "ok".to_string(), data: Some(status), error: None },
             Err(e) => JsonResponse { status: "error".to_string(), data: None, error: Some(e.to_string()) },
         }
@@ -89,7 +89,7 @@ pub fn handle_network_bootstrap(_params: Option<Value>) -> JsonResponse {
 pub fn handle_network_nat(_params: Option<Value>) -> JsonResponse {
     let network = match get_network() { Some(n) => n, None => return not_initialized() };
     RUNTIME.get().unwrap().block_on(async move {
-        match network.get_network_status().await {
+        match network.network_status().await {
             Ok(mut status) => {
                 let nat_status = status
                     .as_object_mut()
@@ -106,7 +106,7 @@ pub fn handle_network_nat(_params: Option<Value>) -> JsonResponse {
 pub fn handle_network_banned(_params: Option<Value>) -> JsonResponse {
     let network = match get_network() { Some(n) => n, None => return not_initialized() };
     RUNTIME.get().unwrap().block_on(async move {
-        match network.get_banned_peers().await {
+        match network.banned_peers().await {
             Ok(peers) => {
                 let json_peers: Vec<serde_json::Value> = peers
                     .into_iter()
@@ -123,7 +123,7 @@ pub fn handle_network_banned(_params: Option<Value>) -> JsonResponse {
 pub fn handle_network_peers(_params: Option<Value>) -> JsonResponse {
     let network = match get_network() { Some(n) => n, None => return not_initialized() };
     RUNTIME.get().unwrap().block_on(async move {
-        match network.get_connected_peers().await {
+        match network.connected_peers().await {
             Ok(peers) => JsonResponse { status: "ok".to_string(), data: Some(serde_json::to_value(peers).unwrap()), error: None },
             Err(e) => JsonResponse { status: "error".to_string(), data: None, error: Some(e.to_string()) },
         }
@@ -174,8 +174,8 @@ pub fn handle_get_health(_params: Option<Value>) -> JsonResponse {
     let network = match get_network() { Some(n) => n, None => return not_initialized() };
     let storage = match get_storage() { Some(s) => s, None => return not_initialized() };
     RUNTIME.get().unwrap().block_on(async move {
-        let network_ok = network.get_network_status().await.is_ok();
-        let storage_ok = storage.get(kinetic_core::constants::DB_PREFIX_LAST_DRAND).is_ok();
+        let network_ok = network.network_status().await.is_ok();
+        let storage_ok = storage.get(kinetic_core::constants::DB_PREFIX_LAST_KYN).is_ok();
 
         if network_ok && storage_ok {
             JsonResponse {
@@ -205,7 +205,7 @@ pub fn handle_get_health(_params: Option<Value>) -> JsonResponse {
 pub fn handle_get_peer_id(_params: Option<Value>) -> JsonResponse {
     let network = match get_network() { Some(n) => n, None => return not_initialized() };
     RUNTIME.get().unwrap().block_on(async move {
-        match network.get_network_status().await {
+        match network.network_status().await {
             Ok(status) => {
                 if let Some(peer_id) = status.get("peer_id").and_then(|p| p.as_str()) {
                     JsonResponse { status: "ok".to_string(), data: Some(serde_json::json!({ "peer_id": peer_id })), error: None }
