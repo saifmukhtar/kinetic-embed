@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "kinetic-bridge-core"
+    "core"
 ]
 
 [profile.release]

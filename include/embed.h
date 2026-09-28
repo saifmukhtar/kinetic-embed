@@ -1,5 +1,5 @@
-#ifndef KINETIC_BRIDGE_H
-#define KINETIC_BRIDGE_H
+#ifndef KINETIC_EMBED_H
+#define KINETIC_EMBED_H
 
 #include <stdint.h>
 
@@ -44,4 +44,4 @@ void free_kinetic_string(char* ptr);
 }
 #endif
 
-#endif // KINETIC_BRIDGE_H
+#endif // KINETIC_EMBED_H
