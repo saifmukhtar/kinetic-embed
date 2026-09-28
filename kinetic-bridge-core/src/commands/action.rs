@@ -2,7 +2,7 @@
 
 use crate::JsonResponse;
 use crate::state::{get_network, get_storage, not_initialized, RUNTIME};
-use kinetic_core::types::clock::KynNetworkExt;
+use kinetic_kyn::types::KynNetworkExt;
 use kinetic_local::action::GLOBAL_ACTION_STATE;
 use serde::Serialize;
 use serde_json::Value;
@@ -69,11 +69,11 @@ pub fn handle_get_action_status(_params: Option<Value>) -> JsonResponse {
     // Fetch verified Kyn from the node's constantly updating local cache
     let current_kyn = {
         let kyn_provider =
-            kinetic_network::client::drand::DrandProvider::new(Some(match get_storage() { Some(s) => s, None => return not_initialized() }));
+            kinetic_network::client::beacon::BeaconProvider::new(Some(match get_storage() { Some(s) => s, None => return not_initialized() }));
         use kinetic_core::traits::KynProvider;
         match kyn_provider.load_cached() {
             Ok(kyn) => kyn.kyn,
-            Err(_) => kinetic_core::types::Kyn::now_local().0, // Fallback to OS clock if DB is completely empty (genesis)
+            Err(_) => kinetic_kyn::types::0, // Fallback to OS clock if DB is completely empty (genesis)
         }
     };
 
@@ -163,7 +163,7 @@ pub struct PublishResponse {
 
 /// Handles API requests to publish a `SignedActionMessage` to the DHT/Gossip network.
 pub fn handle_publish_action(params: Option<Value>) -> JsonResponse {
-    let msg: kinetic_core::action::SignedActionMessage = match params {
+    let msg: kinetic_action::types::SignedActionMessage = match params {
         Some(p) => match serde_json::from_value(p) {
             Ok(m) => m,
             Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Invalid params: {}", e)) }
@@ -176,13 +176,13 @@ pub fn handle_publish_action(params: Option<Value>) -> JsonResponse {
     RUNTIME.get().unwrap().block_on(async {
         let _current_kyn = {
             let kyn_provider =
-                kinetic_network::client::drand::DrandProvider::new(Some(match get_storage() { Some(s) => s, None => return not_initialized() }));
-            use kinetic_core::types::clock::KynNetworkExt;
+                kinetic_network::client::beacon::BeaconProvider::new(Some(match get_storage() { Some(s) => s, None => return not_initialized() }));
+            use kinetic_kyn::types::KynNetworkExt;
             match kyn_provider.load_cached() {
                 Ok(kyn) => kyn.kyn,
                 Err(_) => match kyn_provider.fetch_latest().await {
                     Ok(kyn) => kyn.kyn,
-                    Err(_) => kinetic_core::types::Kyn::now_local().0,
+                    Err(_) => kinetic_kyn::types::0,
                 },
             }
         };
@@ -200,7 +200,7 @@ pub fn handle_publish_action(params: Option<Value>) -> JsonResponse {
                         .map(std::path::PathBuf::from)
                         .unwrap_or_else(|_| {
                             let config = kinetic_local::config::load_config();
-                            kinetic_local::config::get_base_dir()
+                            kinetic_local::config::base_dir()
                                 .join(config.daemon.storage_dir)
                                 .join("action.db")
                         });

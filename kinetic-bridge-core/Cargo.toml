@@ -9,6 +9,7 @@ serde_json = "1.0"
 tokio = { version = "1.37", features = ["full"] }
 
 kinetic-core = { path = "/home/saif/kinetic/kinetic-core" }
+kinetic-kyn = { path = "/home/saif/kinetic/kinetic-kyn" }
 kinetic-network = { path = "/home/saif/kinetic/kinetic-network" }
 kinetic-storage = { path = "/home/saif/kinetic/kinetic-storage" }
 kinetic-types = { path = "/home/saif/kinetic/kinetic-types" }

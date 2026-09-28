@@ -11,8 +11,8 @@ use crate::state::{get_network, get_storage, not_initialized, RUNTIME};
 use serde_json::Value;
 use kinetic_core::traits::KynProvider;
 use kinetic_core::traits::StorageEngine;
-use kinetic_core::types::Kyn;
-use kinetic_core::types::clock::KynNetworkExt;
+use kinetic_kyn::types::Kyn;
+use kinetic_kyn::types::KynNetworkExt;
 use serde::Deserialize;
 use tracing;
 
@@ -25,10 +25,10 @@ async fn get_safe_current_kyn(network: &kinetic_network::client::NetworkClient, 
     }
 
     let kyn_provider =
-        kinetic_network::client::drand::DrandProvider::new(Some(storage.clone()));
+        kinetic_network::client::beacon::BeaconProvider::new(Some(storage.clone()));
     match kyn_provider.load_cached() {
         Ok(kyn) if kyn.kyn > 0 => Kyn(kyn.kyn),
-        _ => Kyn::now_local(),
+        _ => kinetic_kyn::types::Kyn(0),
     }
 }
 
@@ -106,7 +106,7 @@ pub fn handle_generate_kid(params: Option<Value>) -> JsonResponse {
         let storage = match crate::state::get_storage() { Some(s) => s, None => return not_initialized() };
         let current_kyn = get_safe_current_kyn(&network, &storage).await;
 
-        let identity_path = kinetic_local::config::get_base_dir().join("identity.key");
+        let identity_path = kinetic_local::config::base_dir().join("identity.key");
         let res = match kinetic_local::kid_manager::get_or_create_kid_for_name(
             &final_name,
             req.inherit_subname,
@@ -155,7 +155,7 @@ pub fn handle_rotate_kid(params: Option<Value>) -> JsonResponse {
     };
 
     RUNTIME.get().unwrap().block_on(async {
-        let identity_path = kinetic_local::config::get_base_dir().join("identity.key");
+        let identity_path = kinetic_local::config::base_dir().join("identity.key");
         let rotated = match kinetic_local::kid_manager::rotate_name_kid(&name, &identity_path) {
             Ok(r) => r,
             Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(e.to_string()) },
@@ -202,7 +202,7 @@ pub fn handle_revoke_kid(params: Option<Value>) -> JsonResponse {
             Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(e.to_string()) },
         };
 
-        let identity_path = kinetic_local::config::get_base_dir().join("identity.key");
+        let identity_path = kinetic_local::config::base_dir().join("identity.key");
         let auth_kid = match kinetic_local::kid_manager::authorize_kid_document(&name, &revoked_doc, &identity_path) {
             Ok(a) => a,
             Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(e.to_string()) },
@@ -289,7 +289,7 @@ pub fn handle_update_kid_manifest(params: Option<Value>) -> JsonResponse {
         let storage = match crate::state::get_storage() { Some(s) => s, None => return not_initialized() };
         let current_kyn = get_safe_current_kyn(&network, &storage).await;
 
-        let identity_path = kinetic_local::config::get_base_dir().join("identity.key");
+        let identity_path = kinetic_local::config::base_dir().join("identity.key");
         let (manifest, auth_manifest) = match kinetic_local::kid_manager::save_and_sign_local_manifest(
             &name,
             req.services,
@@ -301,7 +301,7 @@ pub fn handle_update_kid_manifest(params: Option<Value>) -> JsonResponse {
         };
 
         // Publish to DHT under hex(sha256(did#manifest))
-        let manifest_key = hex::encode(kinetic_primitives::sha256_hash(
+        let manifest_key = hex::encode(kinetic_primitives::sha256(
             format!("{}#manifest", manifest.kid).as_bytes(),
         ));
 
@@ -364,7 +364,7 @@ pub fn handle_resolve_kid(params: Option<Value>) -> JsonResponse {
             };
 
         // Try to resolve Manifest
-        let manifest_key = hex::encode(kinetic_primitives::sha256_hash(
+        let manifest_key = hex::encode(kinetic_primitives::sha256(
             format!("{}#manifest", did).as_bytes(),
         ));
 
@@ -424,7 +424,7 @@ pub fn handle_publish_kid(params: Option<Value>) -> JsonResponse {
         );
         let is_authorized = match match get_storage() { Some(s) => s, None => return not_initialized() }.get(reveal_key.as_bytes()) {
             Ok(Some(bytes)) => {
-                if let Ok(record) = serde_json::from_slice::<kinetic_core::types::NameRecord>(&bytes) {
+                if let Ok(record) = serde_json::from_slice::<kinetic_types::name_record::NameEnvelope>(&bytes) {
                     kinetic_primitives::verify_mldsa(
                         record.pubkey(),
                         &auth_kid.signable_bytes(kinetic_core::constants::NETWORK_SALT),
@@ -499,7 +499,7 @@ pub fn handle_publish_manifest(params: Option<Value>) -> JsonResponse {
         );
         let is_authorized = match match get_storage() { Some(s) => s, None => return not_initialized() }.get(reveal_key.as_bytes()) {
             Ok(Some(bytes)) => {
-                if let Ok(record) = serde_json::from_slice::<kinetic_core::types::NameRecord>(&bytes) {
+                if let Ok(record) = serde_json::from_slice::<kinetic_types::name_record::NameEnvelope>(&bytes) {
                     kinetic_primitives::verify_mldsa(
                         record.pubkey(),
                         &auth_manifest.signable_bytes(kinetic_core::constants::NETWORK_SALT),
@@ -545,7 +545,7 @@ pub fn handle_publish_manifest(params: Option<Value>) -> JsonResponse {
         // 2. Verify the manifest against the registered KID using network time
         let network = match crate::state::get_network() { Some(n) => n, None => return not_initialized() };
         let storage = match crate::state::get_storage() { Some(s) => s, None => return not_initialized() };
-        let current_network_time = get_safe_current_kyn(&network, &storage).await.to_network_utime().0;
+        let current_network_time = get_safe_current_kyn(&network, &storage).await.to_ukyn(1_730_000_000).0;
         if let Err(e) = auth_manifest
             .manifest
             .verify_at_time(&kid_doc, current_network_time)
@@ -554,7 +554,7 @@ pub fn handle_publish_manifest(params: Option<Value>) -> JsonResponse {
         }
 
         // 3. Serialize and Publish to DHT under the derived manifest key
-        let manifest_key = hex::encode(kinetic_primitives::sha256_hash(
+        let manifest_key = hex::encode(kinetic_primitives::sha256(
             format!("{}#manifest", did_str).as_bytes(),
         ));
 

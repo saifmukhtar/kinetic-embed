@@ -4,7 +4,7 @@ use crate::JsonResponse;
 use crate::state::{get_network, get_storage, not_initialized, KEYPAIR, RUNTIME};
 use serde_json::Value;
 use kinetic_core::constants;
-use kinetic_core::types::{Heartbeat, KynNetworkExt};
+use kinetic_types::name_record::Heartbeat;
 use serde::Serialize;
 use kinetic_core::traits::StorageEngine;
 
@@ -44,11 +44,11 @@ async fn get_safe_current_kyn(network: &kinetic_network::client::NetworkClient, 
     }
 
     let kyn_provider =
-        kinetic_network::client::drand::DrandProvider::new(Some(storage.clone()));
+        kinetic_network::client::beacon::BeaconProvider::new(Some(storage.clone()));
     use kinetic_core::traits::KynProvider;
     match kyn_provider.load_cached() {
         Ok(kyn) if kyn.kyn > 0 => kyn.kyn,
-        _ => kinetic_core::types::Kyn::now_local().0,
+        _ => kinetic_kyn::types::0,
     }
 }
 
@@ -164,7 +164,7 @@ pub fn handle_post_heartbeat(params: Option<Value>) -> JsonResponse {
             Ok(s) => s,
             Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Task spawn failed: {}", e)) },
         };
-        heartbeat.signature = sig_bytes;
+        heartbeat.identity_signature = sig_bytes;
 
         let payload = match serde_json::to_vec(&heartbeat) {
             Ok(p) => p,
@@ -262,7 +262,7 @@ pub fn handle_post_fat_heartbeat(params: Option<Value>) -> JsonResponse {
             Ok(s) => s,
             Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Task spawn failed: {}", e)) },
         };
-        heartbeat.signature = sig_bytes;
+        heartbeat.identity_signature = sig_bytes;
 
         let payload = match serde_json::to_vec(&heartbeat) {
             Ok(p) => p,

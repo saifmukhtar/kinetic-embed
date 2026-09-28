@@ -25,9 +25,9 @@ use crate::state::{get_network, get_storage, not_initialized, RUNTIME};
 use kinetic_core::traits::KynProvider;
 use kinetic_core::traits::StorageEngine;
 use kinetic_core::types::vdf::RevealExt;
-use kinetic_core::types::clock::KynNetworkExt;
+use kinetic_kyn::types::KynNetworkExt;
 use kinetic_verify::signatures::VerifySignature;
-use kinetic_core::types::Kyn;
+use kinetic_kyn::types::Kyn;
 use serde_json::Value;
 
 /// Safely fetches the current Kyn using the network client, with verified local database cache fallback.
@@ -39,10 +39,10 @@ async fn get_safe_current_kyn(network: &kinetic_network::client::NetworkClient, 
     }
 
     let kyn_provider =
-        kinetic_network::client::drand::DrandProvider::new(Some(storage.clone()));
+        kinetic_network::client::beacon::BeaconProvider::new(Some(storage.clone()));
     match kyn_provider.load_cached() {
         Ok(kyn) if kyn.kyn > 0 => Kyn(kyn.kyn),
-        _ => Kyn::now_local(),
+        _ => kinetic_kyn::types::Kyn(0),
     }
 }
 
@@ -51,7 +51,7 @@ pub static OWNED_NAMES_LOCK: Mutex<()> = Mutex::new(());
 
 /// Injects a fully verified `Reveal` payload into the global Kademlia DHT.
 pub fn handle_publish_record(params: Option<Value>) -> JsonResponse {
-    let record: kinetic_core::types::NameRecord = match params.as_ref().and_then(|p| p.get("record")) {
+    let record: kinetic_types::name_record::NameEnvelope = match params.as_ref().and_then(|p| p.get("record")) {
         Some(r) => match serde_json::from_value(r.clone()) {
             Ok(rec) => rec,
             Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Invalid record: {}", e)) },
@@ -74,7 +74,7 @@ pub fn handle_publish_record(params: Option<Value>) -> JsonResponse {
         // Premium names bypass VDF staleness checks.
         let mut is_standard = false;
         let mut kyn = 0;
-        if let kinetic_core::types::NameRecord::Standard(ref mut reveal) = name_record {
+        if let kinetic_types::name_record::NameEnvelope::Standard(ref mut reveal) = name_record {
             reveal.name = fqdn.clone();
             if let Err(e) = reveal.validate() {
                 return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Invalid Reveal: {}", e)) };
@@ -275,7 +275,7 @@ pub fn handle_resolve_name(params: Option<Value>) -> JsonResponse {
         if kinetic_core::types::names::is_reserved_name(&fqdn) {
             let apex = kinetic_core::types::names::extract_apex_name(&fqdn);
             let apex_no_tld = apex.trim_end_matches(kinetic_core::constants::NSP_SUFFIX);
-            let local_zone_file = kinetic_local::config::get_zones_dir()
+            let local_zone_file = kinetic_local::config::zones_dir()
                 .join("local")
                 .join(format!("{}.json", apex_no_tld));
 
@@ -289,7 +289,7 @@ pub fn handle_resolve_name(params: Option<Value>) -> JsonResponse {
                         "timestamp": 0
                     });
                     if let Ok(record) =
-                        serde_json::from_value::<kinetic_core::types::NameRecord>(dummy_json)
+                        serde_json::from_value::<kinetic_types::name_record::NameEnvelope>(dummy_json)
                     {
                         return JsonResponse {
                             status: "success".to_string(),
@@ -305,9 +305,9 @@ pub fn handle_resolve_name(params: Option<Value>) -> JsonResponse {
 
         let record = match match get_network() { Some(n) => n, None => return not_initialized() }.resolve_redundant_payload(&fqdn).await {
             Ok(payload) => {
-                let record = match serde_json::from_slice::<kinetic_core::types::NameRecord>(&payload) {
+                let record = match serde_json::from_slice::<kinetic_types::name_record::NameEnvelope>(&payload) {
                     Ok(r) => r,
-                    Err(_) => return JsonResponse { status: "error".to_string(), data: None, error: Some("Invalid NameRecord payload on DHT".to_string()) },
+                    Err(_) => return JsonResponse { status: "error".to_string(), data: None, error: Some("Invalid NameEnvelope payload on DHT".to_string()) },
                 };
 
                 let dev_mode = kinetic_core::config::is_dev_mode();
@@ -333,7 +333,7 @@ pub fn handle_resolve_name(params: Option<Value>) -> JsonResponse {
                     _ => return JsonResponse { status: "error".to_string(), data: None, error: Some("Not Found".to_string()) },
                 };
 
-                match serde_json::from_slice::<kinetic_core::types::NameRecord>(&record_bytes) {
+                match serde_json::from_slice::<kinetic_types::name_record::NameEnvelope>(&record_bytes) {
                     Ok(r) => r,
                     Err(_) => return JsonResponse { status: "error".to_string(), data: None, error: Some("Stored registration data is corrupted.".to_string()) },
                 }
@@ -373,10 +373,10 @@ pub fn handle_verify_quorum(params: Option<Value>) -> JsonResponse {
         None => return JsonResponse { status: "error".to_string(), data: None, error: Some("Missing 'name'".to_string()) },
     };
 
-    let record: kinetic_core::types::NameRecord = match p.get("record") {
+    let record: kinetic_types::name_record::NameEnvelope = match p.get("record") {
         Some(r) => match serde_json::from_value(r.clone()) {
             Ok(rec) => rec,
-            Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Invalid NameRecord payload: {}", e)) },
+            Err(e) => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Invalid NameEnvelope payload: {}", e)) },
         },
         None => return JsonResponse { status: "error".to_string(), data: None, error: Some("Missing 'record'".to_string()) },
     };
@@ -414,7 +414,7 @@ pub struct ReservedNameStatus {
 
 /// Handles API requests to get the list of reserved names and their active local status.
 pub fn handle_get_reserved_names(_params: Option<Value>) -> JsonResponse {
-    let local_dir = kinetic_local::config::get_zones_dir().join("local");
+    let local_dir = kinetic_local::config::zones_dir().join("local");
     let mut statuses = Vec::new();
     for r in kinetic_core::types::RESERVED_NAMES {
         let path = local_dir.join(format!("{}.json", r));
@@ -448,7 +448,7 @@ pub fn handle_get_zone(params: Option<Value>) -> JsonResponse {
             return JsonResponse { status: "error".to_string(), data: None, error: Some(e.to_string()) };
         }
 
-        let path = kinetic_local::config::get_zones_dir()
+        let path = kinetic_local::config::zones_dir()
             .join("config")
             .join(format!("{}.json", fqdn));
         match tokio::fs::read_to_string(&path).await {
@@ -501,7 +501,7 @@ pub fn handle_post_zone(params: Option<Value>) -> JsonResponse {
             return JsonResponse { status: "error".to_string(), data: None, error: Some(e.to_string()) };
         }
 
-        let zones_dir = kinetic_local::config::get_zones_dir().join("config");
+        let zones_dir = kinetic_local::config::zones_dir().join("config");
         let path = zones_dir.join(format!("{}.json", fqdn));
 
         let content = match serde_json::to_string_pretty(&zone) {
@@ -544,7 +544,7 @@ pub fn handle_publish_zone(params: Option<Value>) -> JsonResponse {
         }
 
         // 1. Read the current zone file asynchronously
-        let zone_path = kinetic_local::config::get_zones_dir()
+        let zone_path = kinetic_local::config::zones_dir()
             .join("config")
             .join(format!("{}.json", fqdn));
         let content = match tokio::fs::read_to_string(&zone_path).await {
@@ -565,14 +565,14 @@ pub fn handle_publish_zone(params: Option<Value>) -> JsonResponse {
             _ => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Not registered local: {}", fqdn)) },
         };
 
-        let mut record: kinetic_core::types::NameRecord = match serde_json::from_slice(&reveal_bytes) {
+        let mut record: kinetic_types::name_record::NameEnvelope = match serde_json::from_slice(&reveal_bytes) {
             Ok(r) => r,
             Err(_) => return JsonResponse { status: "error".to_string(), data: None, error: Some("Stored registration data is corrupted.".to_string()) },
         };
 
         // 3. Load the daemon keypair and re-sign with the updated payload
         let keypair = match crate::state::get_keypair() { Some(k) => k, None => return not_initialized() };
-        let pubkey_bytes = keypair.pubkey_bytes();
+        let pubkey_bytes = keypair.as_bytes();
         if record.pubkey() != pubkey_bytes.as_slice() {
             return JsonResponse { status: "error".to_string(), data: None, error: Some("The daemon key does not match the owner key for this name registration.".to_string()) };
         }
@@ -583,18 +583,18 @@ pub fn handle_publish_zone(params: Option<Value>) -> JsonResponse {
         };
 
         match &mut record {
-            kinetic_core::types::NameRecord::Standard(r) => {
-                r.payload = payload;
+            kinetic_types::name_record::NameEnvelope::Standard(r) => {
+                r.embedded_nrs = payload;
                 let signable = r.signable_bytes(kinetic_core::constants::NETWORK_SALT);
-                r.signature = keypair.sign(&signable);
+                r.identity_signature = keypair.sign(&signable);
             }
-            kinetic_core::types::NameRecord::Prime {
+            kinetic_types::name_record::NameEnvelope::Prime {
                 name,
                 payload: p,
                 signature: s,
                 ..
             }
-            | kinetic_core::types::NameRecord::Infra {
+            | kinetic_types::name_record::NameEnvelope::Infra {
                 name,
                 payload: p,
                 signature: s,
@@ -672,7 +672,7 @@ pub fn handle_post_local_zone(params: Option<Value>) -> JsonResponse {
         let apex = kinetic_core::types::names::extract_apex_name(&fqdn);
         let apex_no_tld = apex.trim_end_matches(kinetic_core::constants::NSP_SUFFIX);
 
-        let local_dir = kinetic_local::config::get_zones_dir().join("local");
+        let local_dir = kinetic_local::config::zones_dir().join("local");
         if let Err(e) = tokio::fs::create_dir_all(&local_dir).await {
             return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Failed to create local zones directory: {}", e)) };
         }
@@ -711,7 +711,7 @@ pub fn handle_delete_local_zone(params: Option<Value>) -> JsonResponse {
         let apex = kinetic_core::types::names::extract_apex_name(&fqdn);
         let apex_no_tld = apex.trim_end_matches(kinetic_core::constants::NSP_SUFFIX);
 
-        let path = kinetic_local::config::get_zones_dir()
+        let path = kinetic_local::config::zones_dir()
             .join("local")
             .join(format!("{}.json", apex_no_tld));
 
@@ -752,7 +752,7 @@ pub fn handle_get_local_zone(params: Option<Value>) -> JsonResponse {
         let apex = kinetic_core::types::names::extract_apex_name(&fqdn);
         let apex_no_tld = apex.trim_end_matches(kinetic_core::constants::NSP_SUFFIX);
 
-        let path = kinetic_local::config::get_zones_dir()
+        let path = kinetic_local::config::zones_dir()
             .join("local")
             .join(format!("{}.json", apex_no_tld));
 
@@ -790,7 +790,7 @@ pub struct FatZoneRequest {
     pub zone: kinetic_core::types::NrsZone,
 }
 
-/// Publishes a Fat NRS NameRecord (Zone Update) using a delegated hot key.
+/// Publishes a Fat NRS NameEnvelope (Zone Update) using a delegated hot key.
 pub fn handle_publish_fat_zone(params: Option<Value>) -> JsonResponse {
     let p = match params {
         Some(p) => p,
@@ -843,7 +843,7 @@ pub fn handle_publish_fat_zone(params: Option<Value>) -> JsonResponse {
             _ => return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Not registered local: {}", fqdn)) },
         };
 
-        let mut record: kinetic_core::types::NameRecord = match serde_json::from_slice(&reveal_bytes) {
+        let mut record: kinetic_types::name_record::NameEnvelope = match serde_json::from_slice(&reveal_bytes) {
             Ok(r) => r,
             Err(_) => return JsonResponse { status: "error".to_string(), data: None, error: Some("Stored registration data is corrupted.".to_string()) },
         };
@@ -855,20 +855,20 @@ pub fn handle_publish_fat_zone(params: Option<Value>) -> JsonResponse {
         };
 
         match &mut record {
-            kinetic_core::types::NameRecord::Standard(reveal) => {
-                reveal.payload = payload_bytes;
+            kinetic_types::name_record::NameEnvelope::Standard(reveal) => {
+                reveal.embedded_nrs = payload_bytes;
                 reveal.authorization = Some(Box::new(req.authorized_manifest));
                 let signable = reveal.signable_bytes(kinetic_core::constants::NETWORK_SALT);
-                reveal.signature = tokio::task::spawn_blocking(move || keypair.sign(&signable)).await.unwrap();
+                reveal.identity_signature = tokio::task::spawn_blocking(move || keypair.sign(&signable)).await.unwrap();
             }
-            kinetic_core::types::NameRecord::Prime {
+            kinetic_types::name_record::NameEnvelope::Prime {
                 name,
                 payload,
                 authorization,
                 signature,
                 ..
             }
-            | kinetic_core::types::NameRecord::Infra {
+            | kinetic_types::name_record::NameEnvelope::Infra {
                 name,
                 payload,
                 authorization,

@@ -108,7 +108,7 @@ pub fn handle_macro_register_name(params: Option<Value>) -> JsonResponse {
         // Step 1: KYN Time Oracle
         update_task_status(&tasks_clone, &task_id_clone, "Fetching KYN Time Oracle", 10);
         let kyn_provider: std::sync::Arc<dyn kinetic_core::traits::KynProvider> = std::sync::Arc::new(
-            kinetic_network::client::drand::DrandProvider::new(Some(storage_clone.clone())),
+            kinetic_network::client::beacon::BeaconProvider::new(Some(storage_clone.clone())),
         );
         let drand_data = match kyn_provider.load_cached() {
             Ok(data) => data,
@@ -130,7 +130,7 @@ pub fn handle_macro_register_name(params: Option<Value>) -> JsonResponse {
         // SHA-256(name‖salt‖randomness‖pubkey) — opaque to any observer during the 32-second
         // window before the reveal appears.
         update_task_status(&tasks_clone, &task_id_clone, "Generating Commitment", 20);
-        let identity_path = kinetic_local::config::get_base_dir().join("identity.key");
+        let identity_path = kinetic_local::config::base_dir().join("identity.key");
         let keypair = match kinetic_local::identity::load_keypair(&identity_path) {
             Ok(k) => k,
             Err(e) => {
@@ -142,7 +142,7 @@ pub fn handle_macro_register_name(params: Option<Value>) -> JsonResponse {
                 return;
             }
         };
-        let pubkey = keypair.pubkey_bytes();
+        let pubkey = keypair.as_bytes();
         let mut salt = [0u8; 32];
         if let Err(e) = getrandom::getrandom(&mut salt) {
             update_task_error(
@@ -180,7 +180,7 @@ pub fn handle_macro_register_name(params: Option<Value>) -> JsonResponse {
             30,
         );
         let required_iters =
-            kinetic_core::consensus_math::ConsensusParams::default().iterations(&fqdn);
+            kinetic_core::physics::NetworkPhysics::default().iterations(&fqdn);
         let actual_iterations = std::cmp::max(iterations, required_iters);
 
         let vdf_engine = kinetic_vdf::RsaVdfEngine::new();
@@ -261,16 +261,16 @@ pub fn handle_macro_register_name(params: Option<Value>) -> JsonResponse {
         update_task_status(&tasks_clone, &task_id_clone, "Injecting Identity (KID)", 92);
         let current_kyn = {
             let kyn_provider =
-                kinetic_network::client::drand::DrandProvider::new(Some(storage_clone.clone()));
+                kinetic_network::client::beacon::BeaconProvider::new(Some(storage_clone.clone()));
             use kinetic_core::traits::KynProvider;
-            use kinetic_core::types::clock::KynNetworkExt;
+            use kinetic_kyn::types::KynNetworkExt;
             match kyn_provider.load_cached() {
                 Ok(kyn) => kyn.kyn,
-                Err(_) => kinetic_core::types::Kyn::now_local().0,
+                Err(_) => kinetic_kyn::types::0,
             }
         };
-        let current_kyn = kinetic_core::types::Kyn(current_kyn);
-        let identity_path = kinetic_local::config::get_base_dir().join("identity.key");
+        let current_kyn = kinetic_kyn::types::Kyn(current_kyn);
+        let identity_path = kinetic_local::config::base_dir().join("identity.key");
 
         let kid_id = match kinetic_local::kid_manager::get_or_create_kid_for_name(
             &fqdn,
@@ -294,7 +294,7 @@ pub fn handle_macro_register_name(params: Option<Value>) -> JsonResponse {
         let mut records = HashMap::new();
         records.insert(
             "@".to_string(),
-            vec![kinetic_core::types::NrsRecord::KID(kid_id)],
+            vec![kinetic_types::name_record::NrsRecord::KID(kid_id)],
         );
         let zone = kinetic_core::types::NrsZone { records };
         let payload = match serde_json::to_vec(&zone) {
@@ -313,13 +313,13 @@ pub fn handle_macro_register_name(params: Option<Value>) -> JsonResponse {
             }
         };
 
-        let mut reveal = kinetic_core::types::Reveal {
+        let mut reveal = kinetic_types::vdf::Reveal {
             protocol_version: 1,
             name: fqdn.clone(),
             payload,
             salt,
-            kyn: drand_data.kyn,
-            drand_signature: drand_data.signature.clone(),
+            kyn: drand_data.kyn(),
+            beacon_signature: drand_data.signature.clone(),
             iterations: actual_iterations,
             vdf_proof: kinetic_core::types::VdfProof {
                 proof_bytes: proof.proof_bytes,
@@ -331,7 +331,7 @@ pub fn handle_macro_register_name(params: Option<Value>) -> JsonResponse {
         };
 
         let signable = reveal.signable_bytes(kinetic_core::constants::NETWORK_SALT);
-        reveal.signature = keypair.sign(&signable);
+        reveal.identity_signature = keypair.sign(&signable);
 
         // Publish to Network
         let reveal_bytes = match serde_json::to_vec(&reveal) {
@@ -385,7 +385,7 @@ pub fn handle_macro_register_name(params: Option<Value>) -> JsonResponse {
         drop(_lock);
 
         // Save default zone file
-        let zones_dir = kinetic_local::config::get_zones_dir().join("config");
+        let zones_dir = kinetic_local::config::zones_dir().join("config");
         let _ = std::fs::create_dir_all(&zones_dir);
         let path = zones_dir.join(format!("{}.json", fqdn));
         if let Ok(s) = serde_json::to_string_pretty(&zone)
@@ -472,7 +472,7 @@ pub fn handle_macro_renew_name(params: Option<Value>) -> JsonResponse {
                 return;
             }
         };
-        let old_record: kinetic_core::types::NameRecord = match serde_json::from_slice(
+        let old_record: kinetic_types::name_record::NameEnvelope = match serde_json::from_slice(
             &old_reveal_bytes,
         ) {
             Ok(r) => r,
@@ -491,9 +491,9 @@ pub fn handle_macro_renew_name(params: Option<Value>) -> JsonResponse {
             }
         };
         let old_reveal = match old_record {
-            kinetic_core::types::NameRecord::Standard(r) => r,
-            kinetic_core::types::NameRecord::Prime { .. }
-            | kinetic_core::types::NameRecord::Infra { .. } => {
+            kinetic_types::name_record::NameEnvelope::Standard(r) => r,
+            kinetic_types::name_record::NameEnvelope::Prime { .. }
+            | kinetic_types::name_record::NameEnvelope::Infra { .. } => {
                 update_task_error(
                     &tasks_clone,
                     &task_id_clone,
@@ -506,7 +506,7 @@ pub fn handle_macro_renew_name(params: Option<Value>) -> JsonResponse {
         // Step 2: KYN Time Oracle
         update_task_status(&tasks_clone, &task_id_clone, "Fetching KYN Time Oracle", 10);
         let kyn_provider: std::sync::Arc<dyn kinetic_core::traits::KynProvider> = std::sync::Arc::new(
-            kinetic_network::client::drand::DrandProvider::new(Some(storage_clone.clone())),
+            kinetic_network::client::beacon::BeaconProvider::new(Some(storage_clone.clone())),
         );
         let drand_data = match kyn_provider.load_cached() {
             Ok(d) => d,
@@ -518,7 +518,7 @@ pub fn handle_macro_renew_name(params: Option<Value>) -> JsonResponse {
 
         // Step 3: Commitment — generate privately; broadcast AFTER VDF (Option B / C-1 fix).
         update_task_status(&tasks_clone, &task_id_clone, "Generating Commitment", 20);
-        let identity_path = kinetic_local::config::get_base_dir().join("identity.key");
+        let identity_path = kinetic_local::config::base_dir().join("identity.key");
         let keypair = match kinetic_local::identity::load_keypair(&identity_path) {
             Ok(k) => k,
             Err(e) => {
@@ -530,7 +530,7 @@ pub fn handle_macro_renew_name(params: Option<Value>) -> JsonResponse {
                 return;
             }
         };
-        let pubkey_bytes = keypair.pubkey_bytes();
+        let pubkey_bytes = keypair.as_bytes();
         let mut salt = [0u8; 32];
         if let Err(e) = getrandom::getrandom(&mut salt) {
             update_task_error(
@@ -569,7 +569,7 @@ pub fn handle_macro_renew_name(params: Option<Value>) -> JsonResponse {
         );
 
         let required_iters =
-            kinetic_core::consensus_math::ConsensusParams::default().iterations(&fqdn);
+            kinetic_core::physics::NetworkPhysics::default().iterations(&fqdn);
         // Renewals get an 80% discount
         let discounted_iters = (required_iters as f64 * 0.2) as u64;
         let actual_iterations = std::cmp::max(iterations, discounted_iters);
@@ -649,19 +649,19 @@ pub fn handle_macro_renew_name(params: Option<Value>) -> JsonResponse {
         let previous_proof = kinetic_core::types::PreviousProof {
             salt: old_reveal.salt,
             kyn: old_reveal.kyn,
-            drand_signature: old_reveal.drand_signature.clone(),
+            beacon_signature: old_reveal.beacon_signature.clone(),
             iterations: old_reveal.iterations,
             vdf_proof: old_reveal.vdf_proof.clone(),
-            signature: old_reveal.signature.clone(),
+            signature: old_reveal.identity_signature.clone(),
         };
 
-        let mut new_reveal = kinetic_core::types::Reveal {
+        let mut new_reveal = kinetic_types::vdf::Reveal {
             protocol_version: 1,
             name: fqdn.clone(),
-            payload: old_reveal.payload.clone(), // Keep existing zone payload
+            payload: old_reveal.embedded_nrs.clone(), // Keep existing zone payload
             salt,
-            kyn: drand_data.kyn,
-            drand_signature: drand_data.signature.clone(),
+            kyn: drand_data.kyn(),
+            beacon_signature: drand_data.signature.clone(),
             iterations: actual_iterations,
             vdf_proof: kinetic_core::types::VdfProof {
                 proof_bytes: proof.proof_bytes,
@@ -673,7 +673,7 @@ pub fn handle_macro_renew_name(params: Option<Value>) -> JsonResponse {
         };
 
         let signable = new_reveal.signable_bytes(kinetic_core::constants::NETWORK_SALT);
-        new_reveal.signature = keypair.sign(&signable);
+        new_reveal.identity_signature = keypair.sign(&signable);
 
         let reveal_bytes = match serde_json::to_vec(&new_reveal) {
             Ok(b) => b,

@@ -11,14 +11,14 @@ use crate::JsonResponse;
 use serde_json::Value;
 use crate::state::{get_storage, not_initialized};
 use kinetic_core::traits::KynProvider;
-use kinetic_core::types::clock::KineticTime;
+use kinetic_kyn::types::KineticTime;
 use tracing;
 
 /// Returns the current verified Kinetic Time from the daemon's internal state.
 pub fn handle_get_time(_params: Option<Value>) -> JsonResponse {
     let storage = match get_storage() { Some(s) => s, None => return not_initialized() };
     let kyn_provider =
-        kinetic_network::client::drand::DrandProvider::new(Some(storage));
+        kinetic_network::client::beacon::BeaconProvider::new(Some(storage));
 
     // Always prefer the cache for instantaneous responses,
     // the Heartbeat loop ensures this cache is populated.
@@ -26,8 +26,8 @@ pub fn handle_get_time(_params: Option<Value>) -> JsonResponse {
     match kyn_provider.load_cached() {
         Ok(drand_data) => {
             let time = KineticTime::from_kyn(
-                kinetic_core::types::Kyn(drand_data.kyn),
-                kinetic_core::types::Kyn(kinetic_core::constants::KINETIC_GENESIS_KYN),
+                kinetic_kyn::types::Kyn(drand_data.kyn),
+                kinetic_kyn::types::Kyn(kinetic_core::constants::KINETIC_GENESIS_KYN),
             );
             JsonResponse {
                 status: "success".to_string(),

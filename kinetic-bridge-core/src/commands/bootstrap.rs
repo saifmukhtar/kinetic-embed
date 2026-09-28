@@ -111,7 +111,7 @@ pub fn handle_init_kinetic(params: Option<Value>) -> JsonResponse {
 
         // Step 5: Fetch initial Kyn from the Time Oracle (optional — falls back to 0).
         let kyn_provider: Arc<dyn KynProvider> = Arc::new(
-            kinetic_network::client::drand::DrandProvider::new(Some(storage.clone())),
+            kinetic_network::client::beacon::BeaconProvider::new(Some(storage.clone())),
         );
         let initial_kyn = match kyn_provider.fetch_latest().await {
             Ok(k) => {
@@ -145,8 +145,8 @@ pub fn handle_init_kinetic(params: Option<Value>) -> JsonResponse {
 
         // Step 9: Build the network config.
         let mode = match p.network_mode.as_deref() {
-            Some("LightNode") => NetworkMode::LightNode,
-            _ => NetworkMode::FullNode,
+            Some("LightNode") => NetworkMode::Edge,
+            _ => NetworkMode::Router,
         };
         let port = p.listen_port.unwrap_or(0);
         let listen_addrs = vec![

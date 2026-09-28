@@ -2,7 +2,7 @@ pub mod action;
 pub mod atlas;
 pub mod bootstrap;
 pub mod config;
-pub mod consensus;
+pub mod vdf_api;
 pub mod gossip;
 pub mod heartbeat;
 pub mod kid;

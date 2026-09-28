@@ -2,7 +2,7 @@
 
 use crate::JsonResponse;
 use serde_json::Value;
-use kinetic_core::consensus_math::ConsensusParams;
+use kinetic_core::physics::NetworkPhysics;
 use serde::{Deserialize, Serialize};
 
 /// Protocol-level consensus requirements for a name.
@@ -33,9 +33,9 @@ pub struct LocalPrediction {
     pub hardware_rating: String,
 }
 
-/// Response returned by the pre-flight difficulty calculator.
+/// Response returned by the pre-flight VDF iterations calculator.
 #[derive(Serialize)]
-pub struct DifficultyResponse {
+pub struct IterationsResponse {
     /// The normalized name used for the calculation.
     pub name: String,
     /// The extracted apex label of the name.
@@ -55,9 +55,9 @@ pub struct TakeoverQuery {
     pub kyns_idle: Option<u64>,
 }
 
-/// Response returned by the takeover difficulty calculator.
+/// Response returned by the takeover iterations calculator.
 #[derive(Serialize)]
-pub struct TakeoverDifficultyResponse {
+pub struct TakeoverIterationsResponse {
     /// The normalized name used for the calculation.
     pub name: String,
     /// The base required iterations to register this name if it was perfectly new.
@@ -106,8 +106,8 @@ fn format_duration(secs: u64) -> String {
     }
 }
 
-/// Retrieves the base difficulty (required VDF iterations) to register a specific name.
-pub fn handle_get_difficulty(params: Option<Value>) -> JsonResponse {
+/// Retrieves the base iterations (required VDF iterations) to register a specific name.
+pub fn handle_get_iterations(params: Option<Value>) -> JsonResponse {
     let name = match params.as_ref().and_then(|p| p.get("name")).and_then(|n| n.as_str()) {
         Some(n) => n.to_string(),
         None => return JsonResponse { status: "error".to_string(), data: None, error: Some("Missing or invalid 'name'".to_string()) },
@@ -118,8 +118,8 @@ pub fn handle_get_difficulty(params: Option<Value>) -> JsonResponse {
         return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Invalid name: {}", e)) };
     }
 
-    let consensus_params = ConsensusParams::default();
-    let iterations = consensus_params.iterations(&normalized);
+    let physics_params = kinetic_core::physics::NetworkPhysics::default();
+    let iterations = physics_params.iterations(&normalized);
     let apex = kinetic_core::types::names::extract_apex_name(&normalized).to_string();
     let label = apex
         .strip_suffix(kinetic_core::constants::NSP_SUFFIX)
@@ -129,16 +129,16 @@ pub fn handle_get_difficulty(params: Option<Value>) -> JsonResponse {
 
     let ndc_tier = format!("{}_chars", label_length);
     let network_reference_target_minutes = match label_length {
-        0 | 1 => kinetic_core::constants::CONSENSUS_NDC_LEN_0_TO_1,
-        2 => kinetic_core::constants::CONSENSUS_NDC_LEN_2,
-        3 => kinetic_core::constants::CONSENSUS_NDC_LEN_3,
-        4 => kinetic_core::constants::CONSENSUS_NDC_LEN_4,
-        5 => kinetic_core::constants::CONSENSUS_NDC_LEN_5,
-        6 => kinetic_core::constants::CONSENSUS_NDC_LEN_6,
-        7 => kinetic_core::constants::CONSENSUS_NDC_LEN_7,
-        8..=10 => kinetic_core::constants::CONSENSUS_NDC_LEN_8_TO_10,
-        11..=17 => kinetic_core::constants::CONSENSUS_NDC_LEN_11_TO_17,
-        18..=20 => kinetic_core::constants::CONSENSUS_NDC_LEN_18_TO_20,
+        0 | 1 => kinetic_core::constants::PHYSICS_NDC_LEN_0_TO_1,
+        2 => kinetic_core::constants::PHYSICS_NDC_LEN_2,
+        3 => kinetic_core::constants::PHYSICS_NDC_LEN_3,
+        4 => kinetic_core::constants::PHYSICS_NDC_LEN_4,
+        5 => kinetic_core::constants::PHYSICS_NDC_LEN_5,
+        6 => kinetic_core::constants::PHYSICS_NDC_LEN_6,
+        7 => kinetic_core::constants::PHYSICS_NDC_LEN_7,
+        8..=10 => kinetic_core::constants::PHYSICS_NDC_LEN_8_TO_10,
+        11..=17 => kinetic_core::constants::PHYSICS_NDC_LEN_11_TO_17,
+        18..=20 => kinetic_core::constants::PHYSICS_NDC_LEN_18_TO_20,
         _ => kinetic_core::constants::TARGET_MINUTES as u64,
     };
 
@@ -169,7 +169,7 @@ pub fn handle_get_difficulty(params: Option<Value>) -> JsonResponse {
 
     JsonResponse {
         status: "success".to_string(),
-        data: Some(serde_json::to_value(DifficultyResponse {
+        data: Some(serde_json::to_value(IterationsResponse {
             name: normalized,
             label,
             label_length,
@@ -191,9 +191,9 @@ pub fn handle_get_difficulty(params: Option<Value>) -> JsonResponse {
     }
 }
 
-/// Calculates the decayed takeover difficulty for an idle name.
+/// Calculates the decayed takeover iterations for an idle name.
 /// Requires the client to pass `?kyns_idle=X` in the query string.
-pub fn handle_takeover_difficulty(params: Option<Value>) -> JsonResponse {
+pub fn handle_takeover_iterations(params: Option<Value>) -> JsonResponse {
     let p = match params {
         Some(p) => p,
         None => return JsonResponse { status: "error".to_string(), data: None, error: Some("Missing params".to_string()) },
@@ -208,10 +208,10 @@ pub fn handle_takeover_difficulty(params: Option<Value>) -> JsonResponse {
     };
 
     let normalized = kinetic_core::types::names::normalize_name(&name);
-    let consensus_params = ConsensusParams::default();
-    let base_iterations = consensus_params.iterations(&normalized);
+    let physics_params = kinetic_core::physics::NetworkPhysics::default();
+    let base_iterations = physics_params.iterations(&normalized);
 
-    let current_iterations = consensus_params.takeover_diff(base_iterations, kyns_idle);
+    let current_iterations = physics_params.takeover_iterations(base_iterations, kyns_idle);
     let decay_multiplier = if base_iterations > 0 {
         current_iterations as f64 / base_iterations as f64
     } else {
@@ -220,7 +220,7 @@ pub fn handle_takeover_difficulty(params: Option<Value>) -> JsonResponse {
 
     JsonResponse {
         status: "success".to_string(),
-        data: Some(serde_json::to_value(TakeoverDifficultyResponse {
+        data: Some(serde_json::to_value(TakeoverIterationsResponse {
             name: normalized,
             base_iterations,
             kyns_idle,
@@ -243,7 +243,7 @@ pub fn handle_validate_name(params: Option<Value>) -> JsonResponse {
 
     let normalized = kinetic_core::types::names::normalize_name(&req.name);
     let is_reserved = kinetic_core::types::names::is_reserved_name(&normalized)
-        || kinetic_core::types::protocol::is_protocol_name(&normalized);
+        || kinetic_types::protocol::is_protocol_name(&normalized);
 
     let res = match kinetic_core::types::names::is_valid_apex_name(&normalized) {
         Ok(_) => ValidateResponse {

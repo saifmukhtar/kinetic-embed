@@ -77,9 +77,9 @@ pub fn execute_command(json_input: &str) -> String {
         
         "atlas_sync" => commands::atlas::handle_atlas_sync(req.params),
         
-        "get_difficulty" => commands::consensus::handle_get_difficulty(req.params),
-        "takeover_difficulty" => commands::consensus::handle_takeover_difficulty(req.params),
-        "validate_name" => commands::consensus::handle_validate_name(req.params),
+        "get_iterations" => commands::vdf_api::handle_get_iterations(req.params),
+        "takeover_iterations" => commands::vdf_api::handle_takeover_iterations(req.params),
+        "validate_name" => commands::vdf_api::handle_validate_name(req.params),
         
         "gossip_subscribe" => commands::gossip::handle_gossip_subscribe(req.params),
         "gossip_publish" => commands::gossip::handle_gossip_publish(req.params),

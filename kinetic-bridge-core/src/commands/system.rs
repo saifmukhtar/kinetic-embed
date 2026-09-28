@@ -47,7 +47,7 @@ pub fn handle_restart(_params: Option<Value>) -> JsonResponse {
 /// Exports the local Proxy Root CA certificate for browser installation.
 pub fn handle_get_ca_cert(_params: Option<Value>) -> JsonResponse {
     RUNTIME.get().unwrap().block_on(async {
-        let base_config_dir = kinetic_local::config::get_base_dir();
+        let base_config_dir = kinetic_local::config::base_dir();
 
         let nsp = kinetic_core::constants::NSP_SUFFIX;
         let salt_prefix = &kinetic_core::constants::NETWORK_SALT_HEX[0..4];
