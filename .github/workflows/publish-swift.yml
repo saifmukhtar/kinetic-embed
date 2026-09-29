@@ -1,9 +1,7 @@
 name: Publish Swift SPM Package
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
 
 jobs:
   build-and-publish:
@@ -18,12 +16,29 @@ jobs:
         with:
           targets: aarch64-apple-ios, aarch64-apple-ios-sim, x86_64-apple-ios, aarch64-apple-darwin, x86_64-apple-darwin
 
-      - name: Build Rust Engine for Apple Targets
+      - name: Build for iOS (Device)
         working-directory: core
+        env:
+          IPHONEOS_DEPLOYMENT_TARGET: "13.0"
         run: |
+          export SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
           cargo build --release --target aarch64-apple-ios
+
+      - name: Build for iOS (Simulator)
+        working-directory: core
+        env:
+          IPHONEOS_DEPLOYMENT_TARGET: "13.0"
+        run: |
+          export SDKROOT=$(xcrun --sdk iphonesimulator --show-sdk-path)
           cargo build --release --target aarch64-apple-ios-sim
           cargo build --release --target x86_64-apple-ios
+
+      - name: Build for macOS
+        working-directory: core
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "12.0"
+        run: |
+          export SDKROOT=$(xcrun --sdk macosx --show-sdk-path)
           cargo build --release --target aarch64-apple-darwin
           cargo build --release --target x86_64-apple-darwin
 
