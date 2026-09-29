@@ -8,17 +8,17 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 tokio = { version = "1.53.1", features = ["rt", "rt-multi-thread", "sync", "time"] }
 
-kinetic-core = { path = "/home/saif/kinetic/kinetic-core" }
-kinetic-kyn = { path = "/home/saif/kinetic/kinetic-kyn" }
-kinetic-network = { path = "/home/saif/kinetic/kinetic-network" }
-kinetic-storage = { path = "/home/saif/kinetic/kinetic-storage" }
-kinetic-types = { path = "/home/saif/kinetic/kinetic-types" }
-kinetic-local = { path = "/home/saif/kinetic/kinetic-local" }
-kinetic-verify = { path = "/home/saif/kinetic/kinetic-verify" }
-kinetic-action = { path = "/home/saif/kinetic/kinetic-action" }
-kinetic-primitives = { path = "/home/saif/kinetic/kinetic-primitives" }
-kinetic-kid = { path = "/home/saif/kinetic/kinetic-kid" }
-kinetic-vdf = { path = "/home/saif/kinetic/kinetic-vdf" }
+kinetic-core = { git = "https://github.com/saifmukhtar/kinetic.git" }
+kinetic-kyn = { git = "https://github.com/saifmukhtar/kinetic.git" }
+kinetic-network = { git = "https://github.com/saifmukhtar/kinetic.git" }
+kinetic-storage = { git = "https://github.com/saifmukhtar/kinetic.git" }
+kinetic-types = { git = "https://github.com/saifmukhtar/kinetic.git" }
+kinetic-local = { git = "https://github.com/saifmukhtar/kinetic.git" }
+kinetic-verify = { git = "https://github.com/saifmukhtar/kinetic.git" }
+kinetic-action = { git = "https://github.com/saifmukhtar/kinetic.git" }
+kinetic-primitives = { git = "https://github.com/saifmukhtar/kinetic.git" }
+kinetic-kid = { git = "https://github.com/saifmukhtar/kinetic.git" }
+kinetic-vdf = { git = "https://github.com/saifmukhtar/kinetic.git" }
 hex = "0.4.3"
 tracing = "0.1.44"
 uniffi = { version = "0.32.2", features = ["cli"] }

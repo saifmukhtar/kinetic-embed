@@ -2279,6 +2279,7 @@ dependencies = [
 [[package]]
 name = "kinetic-action"
 version = "0.2.0"
+source = "git+https://github.com/saifmukhtar/kinetic.git#75295da06386a9daf805a85522f11007584a67ce"
 dependencies = [
  "anyhow",
  "hex",
@@ -2293,6 +2294,7 @@ dependencies = [
 [[package]]
 name = "kinetic-core"
 version = "0.2.0"
+source = "git+https://github.com/saifmukhtar/kinetic.git#75295da06386a9daf805a85522f11007584a67ce"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2342,6 +2344,7 @@ dependencies = [
 [[package]]
 name = "kinetic-kid"
 version = "0.2.0"
+source = "git+https://github.com/saifmukhtar/kinetic.git#75295da06386a9daf805a85522f11007584a67ce"
 dependencies = [
  "base64 0.23.1",
  "kinetic-kyn",
@@ -2355,6 +2358,7 @@ dependencies = [
 [[package]]
 name = "kinetic-kyn"
 version = "0.2.0"
+source = "git+https://github.com/saifmukhtar/kinetic.git#75295da06386a9daf805a85522f11007584a67ce"
 dependencies = [
  "drand-verify",
  "hex",
@@ -2366,6 +2370,7 @@ dependencies = [
 [[package]]
 name = "kinetic-local"
 version = "0.2.0"
+source = "git+https://github.com/saifmukhtar/kinetic.git#75295da06386a9daf805a85522f11007584a67ce"
 dependencies = [
  "base64 0.23.1",
  "bincode",
@@ -2393,6 +2398,7 @@ dependencies = [
 [[package]]
 name = "kinetic-network"
 version = "0.2.0"
+source = "git+https://github.com/saifmukhtar/kinetic.git#75295da06386a9daf805a85522f11007584a67ce"
 dependencies = [
  "anyhow",
  "argon2",
@@ -2438,6 +2444,7 @@ dependencies = [
 [[package]]
 name = "kinetic-primitives"
 version = "0.2.0"
+source = "git+https://github.com/saifmukhtar/kinetic.git#75295da06386a9daf805a85522f11007584a67ce"
 dependencies = [
  "ml-dsa",
  "sha2 0.11.0",
@@ -2447,6 +2454,7 @@ dependencies = [
 [[package]]
 name = "kinetic-storage"
 version = "0.2.0"
+source = "git+https://github.com/saifmukhtar/kinetic.git#75295da06386a9daf805a85522f11007584a67ce"
 dependencies = [
  "bytes",
  "kinetic-core",
@@ -2460,6 +2468,7 @@ dependencies = [
 [[package]]
 name = "kinetic-types"
 version = "0.2.0"
+source = "git+https://github.com/saifmukhtar/kinetic.git#75295da06386a9daf805a85522f11007584a67ce"
 dependencies = [
  "bytes",
  "kinetic-kid",
@@ -2473,6 +2482,7 @@ dependencies = [
 [[package]]
 name = "kinetic-vdf"
 version = "0.2.0"
+source = "git+https://github.com/saifmukhtar/kinetic.git#75295da06386a9daf805a85522f11007584a67ce"
 dependencies = [
  "kinetic-core",
  "kinetic-primitives",
@@ -2484,6 +2494,7 @@ dependencies = [
 [[package]]
 name = "kinetic-verify"
 version = "0.2.0"
+source = "git+https://github.com/saifmukhtar/kinetic.git#75295da06386a9daf805a85522f11007584a67ce"
 dependencies = [
  "base64 0.23.1",
  "kinetic-primitives",
