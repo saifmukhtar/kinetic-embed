@@ -30,8 +30,8 @@ let package = Package(
         // The pre-compiled Rust XCFramework binary
         .binaryTarget(
             name: "KineticCore",
-            url: "https://github.com/saifmukhtar/kinetic-embed/releases/download/v0.1.3/KineticCore.xcframework.zip",
-            checksum: "TO_BE_REPLACED_BY_CI" // 64-character hex string
+            url: "https://github.com/saifmukhtar/kinetic-embed/releases/download/v0.1.9/KineticCore.xcframework.zip",
+            checksum: "bcbafcab657d680e765aeac7233928402a9668840c43711edce880fa44f6f49c" // 64-character hex string
         )
     ]
 )
