@@ -1,0 +1,79 @@
+name: Publish Swift SPM Package
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-publish:
+    runs-on: macos-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios, aarch64-apple-ios-sim, x86_64-apple-ios, aarch64-apple-darwin, x86_64-apple-darwin
+
+      - name: Build Rust Engine for Apple Targets
+        working-directory: core
+        run: |
+          cargo build --release --target aarch64-apple-ios
+          cargo build --release --target aarch64-apple-ios-sim
+          cargo build --release --target x86_64-apple-ios
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+
+      - name: Create XCFramework
+        run: |
+          # 1. Combine iOS Simulator architectures (M-series and Intel)
+          lipo -create -output libkinetic_embed_sim.a \
+            core/target/aarch64-apple-ios-sim/release/libkinetic_embed.a \
+            core/target/x86_64-apple-ios/release/libkinetic_embed.a
+            
+          # 2. Combine macOS architectures
+          lipo -create -output libkinetic_embed_mac.a \
+            core/target/aarch64-apple-darwin/release/libkinetic_embed.a \
+            core/target/x86_64-apple-darwin/release/libkinetic_embed.a
+            
+          # 3. Stitch them all into an Apple XCFramework
+          xcodebuild -create-xcframework \
+            -library core/target/aarch64-apple-ios/release/libkinetic_embed.a \
+            -library libkinetic_embed_sim.a \
+            -library libkinetic_embed_mac.a \
+            -output KineticCore.xcframework
+
+      - name: Compress XCFramework
+        run: zip -r KineticCore.xcframework.zip KineticCore.xcframework
+
+      - name: Calculate Checksum and Update Package.swift
+        id: checksum
+        run: |
+          CHECKSUM=$(swift package compute-checksum KineticCore.xcframework.zip)
+          echo "checksum=$CHECKSUM" >> $GITHUB_OUTPUT
+          VERSION="${GITHUB_REF_NAME}"
+          
+          # Use perl to replace the URL and CHECKSUM securely across platforms
+          perl -pi -e "s|url: \".*\"|url: \"https://github.com/saifmukhtar/kinetic-embed/releases/download/$VERSION/KineticCore.xcframework.zip\"|g" Package.swift
+          perl -pi -e "s|checksum: \".*\"|checksum: \"$CHECKSUM\"|g" Package.swift
+
+      - name: Commit Package.swift Update
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add Package.swift
+          git commit -m "chore: update SPM checksum for ${GITHUB_REF_NAME} [skip ci]"
+          git push origin HEAD:main
+          # Also force update the tag so SPM users pulling the tag directly get the right checksum
+          git tag -f ${GITHUB_REF_NAME}
+          git push origin -f ${GITHUB_REF_NAME}
+
+      - name: Upload XCFramework to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: KineticCore.xcframework.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

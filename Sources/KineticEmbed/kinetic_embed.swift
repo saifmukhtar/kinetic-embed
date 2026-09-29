@@ -8,7 +8,7 @@ import Foundation
 // might be in a separate module, or it might be compiled inline into
 // this module. This is a bit of light hackery to work with both.
 #if canImport(kinetic_embedFFI)
-import kinetic_embedFFI
+import KineticBridge
 #endif
 
 fileprivate extension RustBuffer {

@@ -55,7 +55,7 @@ jobs:
           # 4. Create AndroidManifest.xml
           cat << 'EOF' > android_wrapper/src/main/AndroidManifest.xml
           <?xml version="1.0" encoding="utf-8"?>
-          <manifest package="io.github.saifmukhtar.kinetic.embed" />
+          <manifest />
           EOF
 
           # 5. Create CMakeLists.txt (Compiles JNI and links to Rust .so)
@@ -88,6 +88,10 @@ jobs:
                   ndk {
                       abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
                   }
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
               }
               externalNativeBuild {
                   cmake {
