@@ -55,7 +55,7 @@ jobs:
           # 4. Create AndroidManifest.xml
           cat << 'EOF' > android_wrapper/src/main/AndroidManifest.xml
           <?xml version="1.0" encoding="utf-8"?>
-          <manifest package="com.kinetic.embed" />
+          <manifest package="io.github.saifmukhtar.kinetic.embed" />
           EOF
 
           # 5. Create CMakeLists.txt (Compiles JNI and links to Rust .so)
@@ -81,7 +81,7 @@ jobs:
               id("com.vanniktech.maven.publish") version "0.28.0"
           }
           android {
-              namespace = "com.kinetic.embed"
+              namespace = "io.github.saifmukhtar.kinetic.embed"
               compileSdk = 34
               defaultConfig {
                   minSdk = 21
@@ -102,7 +102,7 @@ jobs:
               implementation("net.java.dev.jna:jna:5.13.0@aar")
           }
           mavenPublishing {
-              coordinates("io.github.saifmukhtar", "kinetic-embed", "\$VERSION_NAME")
+              coordinates("io.github.saifmukhtar", "kinetic-embed", "${VERSION_NAME}")
               pom {
                   name.set("Kinetic Embed")
                   description.set("Android embed library for the Kinetic network")

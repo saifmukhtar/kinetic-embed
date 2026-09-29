@@ -91,7 +91,7 @@ extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* /*reserved*/) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_kinetic_KineticBridge_registerEventCallback(
+Java_uniffi_kinetic_1embed_KineticBridge_registerEventCallback(
         JNIEnv* env, jobject /*thiz*/, jobject callback) {
 
     // Release any previous global reference.
@@ -131,7 +131,7 @@ Java_com_kinetic_KineticBridge_registerEventCallback(
 // ─────────────────────────────────────────────────────────────────────────────
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_kinetic_KineticBridge_invokeCommand(
+Java_uniffi_kinetic_1embed_KineticBridge_invokeCommand(
         JNIEnv* env, jobject /*thiz*/, jstring req_json) {
 
     if (!req_json) {
