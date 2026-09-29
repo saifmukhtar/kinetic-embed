@@ -1,0 +1,167 @@
+name: Publish Android AAR to Maven Central
+
+on:
+  push:
+    tags:
+      - 'v*' # Triggers when you push a tag like v1.0.0
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Build Rust Engine (.so)
+        run: |
+          cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 build --release -p kinetic-embed
+
+      - name: Scaffold Android Project
+        run: |
+          # This creates a temporary Android project to build and publish the AAR
+          # keeping your repository completely free of Android/Gradle bloat.
+          mkdir -p android_wrapper/src/main/java/uniffi/kinetic_embed
+          mkdir -p android_wrapper/src/main/cpp
+          mkdir -p android_wrapper/src/main/jniLibs/arm64-v8a
+          mkdir -p android_wrapper/src/main/jniLibs/armeabi-v7a
+          mkdir -p android_wrapper/src/main/jniLibs/x86_64
+
+          # 1. Copy Kotlin files
+          cp bindings/kotlin/*.kt android_wrapper/src/main/java/uniffi/kinetic_embed/
+
+          # 2. Copy JNI C++ file and header
+          cp bindings/kotlin/kinetic_jni.cpp android_wrapper/src/main/cpp/
+          cp include/embed.h android_wrapper/src/main/cpp/
+
+          # 3. Copy compiled Rust .so files
+          cp target/aarch64-linux-android/release/libkinetic_embed.so android_wrapper/src/main/jniLibs/arm64-v8a/
+          cp target/armv7-linux-androideabi/release/libkinetic_embed.so android_wrapper/src/main/jniLibs/armeabi-v7a/
+          cp target/x86_64-linux-android/release/libkinetic_embed.so android_wrapper/src/main/jniLibs/x86_64/
+
+          # 4. Create AndroidManifest.xml
+          cat << 'EOF' > android_wrapper/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest package="com.kinetic.embed" />
+          EOF
+
+          # 5. Create CMakeLists.txt (Compiles JNI and links to Rust .so)
+          cat << 'EOF' > android_wrapper/src/main/cpp/CMakeLists.txt
+          cmake_minimum_required(VERSION 3.22.1)
+          project("kinetic_jni")
+
+          add_library(kinetic_embed SHARED IMPORTED)
+          set_target_properties(kinetic_embed PROPERTIES IMPORTED_LOCATION ${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/${ANDROID_ABI}/libkinetic_embed.so)
+
+          add_library(kinetic_jni SHARED kinetic_jni.cpp)
+          find_library(log-lib log)
+
+          target_link_libraries(kinetic_jni kinetic_embed ${log-lib})
+          EOF
+
+          # 6. Create build.gradle.kts
+          VERSION_NAME="${GITHUB_REF_NAME#v}" # Removes 'v' from v1.0.0
+          cat << EOF > android_wrapper/build.gradle.kts
+          plugins {
+              id("com.android.library") version "8.2.2"
+              kotlin("android") version "1.9.22"
+              id("com.vanniktech.maven.publish") version "0.28.0"
+          }
+          android {
+              namespace = "com.kinetic.embed"
+              compileSdk = 34
+              defaultConfig {
+                  minSdk = 21
+              }
+              externalNativeBuild {
+                  cmake {
+                      path = file("src/main/cpp/CMakeLists.txt")
+                      version = "3.22.1"
+                  }
+              }
+              sourceSets {
+                  getByName("main") {
+                      jniLibs.srcDir("src/main/jniLibs")
+                  }
+              }
+          }
+          dependencies {
+              implementation("net.java.dev.jna:jna:5.13.0@aar")
+          }
+          mavenPublishing {
+              coordinates("io.github.saifmukhtar", "kinetic-embed", "\$VERSION_NAME")
+              pom {
+                  name.set("Kinetic Embed")
+                  description.set("Android embed library for the Kinetic network")
+                  inceptionYear.set("2026")
+                  url.set("https://github.com/saifmukhtar/kinetic-embed")
+                  licenses {
+                      license {
+                          name.set("MIT License")
+                          url.set("https://opensource.org/licenses/MIT")
+                      }
+                  }
+                  developers {
+                      developer {
+                          id.set("saifmukhtar")
+                          name.set("Saif Mukhtar")
+                          url.set("https://github.com/saifmukhtar")
+                      }
+                  }
+                  scm {
+                      url.set("https://github.com/saifmukhtar/kinetic-embed")
+                      connection.set("scm:git:git://github.com/saifmukhtar/kinetic-embed.git")
+                      developerConnection.set("scm:git:ssh://git@github.com/saifmukhtar/kinetic-embed.git")
+                  }
+              }
+              publishToMavenCentral(com.vanniktech.maven.publish.SonatypeHost.CENTRAL_PORTAL)
+              signAllPublications()
+          }
+          EOF
+
+          # 7. Create settings.gradle.kts
+          cat << 'EOF' > android_wrapper/settings.gradle.kts
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "kinetic-embed"
+          EOF
+
+      - name: Publish to Maven Central
+        working-directory: android_wrapper
+        env:
+          # Extract username and password from the SONATYPE_TOKEN (username:password format)
+          TOKEN: ${{ secrets.SONATYPE_TOKEN }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.GPG_PRIVATE_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          # Split the token into username and password for the publishing plugin
+          export ORG_GRADLE_PROJECT_mavenCentralUsername=$(echo "$TOKEN" | cut -d: -f1)
+          export ORG_GRADLE_PROJECT_mavenCentralPassword=$(echo "$TOKEN" | cut -d: -f2)
+          
+          # Build AAR, sign it, and publish to Maven Central
+          gradle publishAndReleaseToMavenCentral --no-daemon

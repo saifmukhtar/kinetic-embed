@@ -1,7 +1,7 @@
 //! API endpoints for manually broadcasting heartbeats and checking real-time DHT heartbeat status.
 
 use crate::JsonResponse;
-use crate::state::{get_network, get_storage, not_initialized, KEYPAIR, RUNTIME};
+use crate::state::{get_network, get_storage, not_initialized, RUNTIME};
 use serde_json::Value;
 use kinetic_core::constants;
 use kinetic_types::name_record::Heartbeat;

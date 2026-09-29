@@ -21,7 +21,15 @@ kinetic-kid = { path = "/home/saif/kinetic/kinetic-kid" }
 kinetic-vdf = { path = "/home/saif/kinetic/kinetic-vdf" }
 hex = "0.4.3"
 tracing = "0.1.44"
+uniffi = { version = "0.32.2", features = ["cli"] }
 uuid = { version = "1.26.1", features = ["v4"] }
+
+[build-dependencies]
+uniffi = { version = "0.32.2", features = ["build"] }
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
 
 [lib]
 crate-type = ["cdylib", "staticlib"]

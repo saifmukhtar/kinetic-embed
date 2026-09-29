@@ -71,16 +71,13 @@ pub fn handle_publish_record(params: Option<Value>) -> JsonResponse {
 
         // For Standard names, we need to validate and enforce KYN Time Oracle staleness.
         // Premium names bypass VDF staleness checks.
-        let mut is_standard = false;
-        let mut kyn = 0;
-        if let kinetic_types::name_record::NameEnvelope::Standard(ref mut reveal) = name_record {
-            reveal.name = fqdn.clone();
-            if let Err(e) = reveal.validate() {
-                return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Invalid Reveal: {}", e)) };
-            }
-            is_standard = true;
-            kyn = reveal.kyn.0.0;
+        let kinetic_types::name_record::NameEnvelope::Standard(ref mut reveal) = name_record;
+        reveal.name = fqdn.clone();
+        if let Err(e) = reveal.validate() {
+            return JsonResponse { status: "error".to_string(), data: None, error: Some(format!("Invalid Reveal: {}", e)) };
         }
+        let is_standard = true;
+        let kyn = reveal.kyn.0.0;
 
         // Enforce Time Oracle staleness
         let network = match crate::state::get_network() { Some(n) => n, None => return not_initialized() };
@@ -571,7 +568,7 @@ pub fn handle_publish_zone(params: Option<Value>) -> JsonResponse {
 
         // 3. Load the daemon keypair and re-sign with the updated payload
         let keypair = match crate::state::get_keypair() { Some(k) => k, None => return not_initialized() };
-        let pubkey_bytes = keypair.to_pubkey().as_bytes().to_vec();
+        let _pubkey_bytes = keypair.to_pubkey().as_bytes().to_vec();
         if record.pubkey() != &keypair.to_pubkey() {
             return JsonResponse { status: "error".to_string(), data: None, error: Some("The daemon key does not match the owner key for this name registration.".to_string()) };
         }

@@ -116,7 +116,7 @@ pub struct ActionNamesResponse {
 
 /// Handles requests to retrieve all mapped Action names (primes and infras) in a single call.
 pub fn handle_get_action_names(_params: Option<Value>) -> JsonResponse {
-    let action_state = match GLOBAL_ACTION_STATE.lock() {
+    let _action_state = match GLOBAL_ACTION_STATE.lock() {
         Ok(s) => s,
         Err(e) => {
             return JsonResponse {

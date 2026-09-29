@@ -6,6 +6,16 @@ pub mod commands;
 pub mod state;
 pub mod callback;
 
+uniffi::setup_scaffolding!();
+
+/// The single UniFFI "Steel Bridge".
+/// Pass any JSON-RPC string in, get a JSON string back.
+/// UniFFI auto-generates the Kotlin: `Kinetic.invokeKineticJson(String)`
+#[uniffi::export]
+pub fn invoke_kinetic_json(req_json: String) -> String {
+    execute_command(&req_json)
+}
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -49,7 +59,7 @@ pub fn execute_command(json_input: &str) -> String {
         "get_action_status" => commands::action::handle_get_action_status(req.params),
         "get_action_names" => commands::action::handle_get_action_names(req.params),
         "publish_action" => commands::action::handle_publish_action(req.params),
-        
+
         "get_config" => commands::config::handle_get_config(req.params),
         "set_config" => commands::config::handle_set_config(req.params),
         "owned_names" => commands::config::handle_owned_names(req.params),
@@ -61,7 +71,13 @@ pub fn execute_command(json_input: &str) -> String {
         "get_health" => commands::config::handle_get_health(req.params),
         "get_peer_id" => commands::config::handle_get_peer_id(req.params),
         "dns_flush" => commands::config::handle_dns_flush(req.params),
-        
+
+        "atlas_sync" => commands::atlas::handle_atlas_sync(req.params),
+
+        "gossip_subscribe" => commands::gossip::handle_gossip_subscribe(req.params),
+        "gossip_publish" => commands::gossip::handle_gossip_publish(req.params),
+        "gossip_topics" => commands::gossip::handle_gossip_topics(req.params),
+
         "list_kids" => commands::kid::handle_list_kids(req.params),
         "fetch_kid" => commands::kid::handle_fetch_kid(req.params),
         "generate_kid" => commands::kid::handle_generate_kid(req.params),
@@ -75,15 +91,9 @@ pub fn execute_command(json_input: &str) -> String {
         
         "get_time" => commands::time::handle_get_time(req.params),
         
-        "atlas_sync" => commands::atlas::handle_atlas_sync(req.params),
-        
         "get_iterations" => commands::vdf_api::handle_get_iterations(req.params),
         "takeover_iterations" => commands::vdf_api::handle_takeover_iterations(req.params),
         "validate_name" => commands::vdf_api::handle_validate_name(req.params),
-        
-        "gossip_subscribe" => commands::gossip::handle_gossip_subscribe(req.params),
-        "gossip_publish" => commands::gossip::handle_gossip_publish(req.params),
-        "gossip_topics" => commands::gossip::handle_gossip_topics(req.params),
         
         "get_heartbeat" => commands::heartbeat::handle_get_heartbeat_status(req.params),
         "post_heartbeat" => commands::heartbeat::handle_post_heartbeat(req.params),

@@ -2,7 +2,6 @@
 
 use crate::JsonResponse;
 use serde_json::Value;
-use kinetic_core::physics::NetworkPhysics;
 use serde::{Deserialize, Serialize};
 
 /// Protocol-level consensus requirements for a name.
