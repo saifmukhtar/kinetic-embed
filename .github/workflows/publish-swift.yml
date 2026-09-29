@@ -51,17 +51,17 @@ jobs:
         run: |
           # 1. Combine iOS Simulator architectures (M-series and Intel)
           lipo -create -output libkinetic_embed_sim.a \
-            core/target/aarch64-apple-ios-sim/release/libkinetic_embed.a \
-            core/target/x86_64-apple-ios/release/libkinetic_embed.a
+            target/aarch64-apple-ios-sim/release/libkinetic_embed.a \
+            target/x86_64-apple-ios/release/libkinetic_embed.a
             
           # 2. Combine macOS architectures
           lipo -create -output libkinetic_embed_mac.a \
-            core/target/aarch64-apple-darwin/release/libkinetic_embed.a \
-            core/target/x86_64-apple-darwin/release/libkinetic_embed.a
+            target/aarch64-apple-darwin/release/libkinetic_embed.a \
+            target/x86_64-apple-darwin/release/libkinetic_embed.a
             
           # 3. Stitch them all into an Apple XCFramework
           xcodebuild -create-xcframework \
-            -library core/target/aarch64-apple-ios/release/libkinetic_embed.a \
+            -library target/aarch64-apple-ios/release/libkinetic_embed.a \
             -library libkinetic_embed_sim.a \
             -library libkinetic_embed_mac.a \
             -output KineticCore.xcframework
